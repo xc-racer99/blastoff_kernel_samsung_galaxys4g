@@ -130,6 +130,42 @@ struct cg2900_rev_data {
 };
 
 /**
+ * struct cg2900_platform_data - Contains platform data for CG2900.
+ * @init:		Callback called upon system start.
+ * @exit:		Callback called upon system shutdown.
+ * @enable_chip:	Callback called for enabling CG2900 chip.
+ * @disable_chip:	Callback called for disabling CG2900 chip.
+ * @set_hci_revision:	Callback called when HCI revision has been detected.
+ * @get_power_switch_off_cmd:	Callback called to retrieve
+ *				HCI VS_Power_Switch_Off command (command
+ *				HCI requires platform specific GPIO data).
+ * @cts_irq:		Interrupt for the UART CTS pin.
+ * @enable_uart:	Callback called when switching from UART GPIO to
+ *			UART HW.
+ * @disable_uart:	Callback called when switching from UART HW to
+ *			UART GPIO.
+ * @uart:		Platform data structure for UART transport.
+ *
+ * Any callback may be NULL if not needed.
+ */
+struct cg2900_platform_data {
+	int (*init)(void);
+	void (*exit)(void);
+	void (*enable_chip)(void);
+	void (*disable_chip)(void);
+	void (*set_hci_revision)(u8 hci_version, u16 hci_revision,
+				 u8 lmp_version, u8 lmp_subversion,
+				 u16 manufacturer);
+	struct sk_buff* (*get_power_switch_off_cmd)(u16 *op_code);
+
+	struct {
+		int cts_irq;
+		int (*enable_uart)(void);
+		int (*disable_uart)(void);
+	} uart;
+};
+
+/**
  * cg2900_register_user() - Register CG2900 user.
  * @name:	Name of HCI H:4 channel to register to.
  * @cb:		Callback structure to use for the H:4 channel.

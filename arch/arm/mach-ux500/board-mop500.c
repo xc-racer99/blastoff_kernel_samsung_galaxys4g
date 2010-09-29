@@ -108,10 +108,29 @@ static struct amba_device *amba_devs[] __initdata = {
 
 /* add any platform devices here - TODO */
 static struct platform_device *platform_devs[] __initdata = {
-	&u8500_i2c0_device,
-	&ux500_i2c1_device,
-	&ux500_i2c2_device,
-	&ux500_i2c3_device,
+	&u8500_hsit_device,
+	&u8500_hsir_device,
+	&u8500_shrm_device,
+	&ste_ff_vibra_device,
+	&ux500_musb_device,
+	&ux500_hwmem_device,
+	&ux500_mcde_device,
+	&ux500_b2r2_device,
+#ifdef CONFIG_CRYPTO_DEV_UX500_HASH
+	&ux500_hash1_device,
+#endif
+#ifdef CONFIG_USB_ANDROID
+	&android_usb_device,
+#ifdef CONFIG_USB_ANDROID_MASS_STORAGE
+	&usb_mass_storage_device,
+#endif
+#ifdef CONFIG_USB_ANDROID_ECM
+	&usb_ecm_device,
+#endif
+#endif
+#ifdef CONFIG_MFD_CG2900
+	&ux500_cg2900_device,
+#endif
 };
 
 static void __init u8500_init_machine(void)

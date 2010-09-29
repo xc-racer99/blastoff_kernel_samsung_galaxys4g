@@ -10,19 +10,20 @@
  * Linux Bluetooth Audio Driver for ST-Ericsson CG2900 controller.
  */
 
-#include <linux/module.h>
-#include <linux/fs.h>
-#include <linux/types.h>
-#include <linux/poll.h>
 #include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/fs.h>
+#include <linux/kernel.h>
+#include <linux/list.h>
+#include <linux/miscdevice.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/poll.h>
+#include <linux/sched.h>
+#include <linux/skbuff.h>
+#include <linux/types.h>
 #include <linux/mfd/cg2900.h>
 #include <linux/mfd/cg2900_audio.h>
-#include <linux/miscdevice.h>
-#include <linux/mutex.h>
-#include <linux/device.h>
-#include <linux/skbuff.h>
-#include <linux/list.h>
-#include <linux/sched.h>
 
 #include "cg2900_debug.h"
 #include "hci_defines.h"
@@ -1541,18 +1542,20 @@ static int conn_start_i2s_to_fm_rx(struct audio_user *audio_user,
 	} else {
 		struct mc_vs_port_cfg_fm fm_cfg;
 
+		memset(&fm_cfg, 0, sizeof(fm_cfg));
+
 		/* Configure port FM RX */
 		/* Expects 0-3 - same as user API - so no conversion needed */
 		PORTCFG_FM_SET_SRATE(fm_cfg, (u8)fm_config->fm.sample_rate);
 
-		err = send_vs_port_cfg(audio_user, CG2900_MC_PORT_FM_RX_0,
+		err = send_vs_port_cfg(audio_user, CG2900_MC_PORT_FM_RX_1,
 				       &fm_cfg, sizeof(fm_cfg));
 		if (err)
 			goto finished_unlock_mutex;
 
 		/* CreateStream */
 		err = send_vs_create_stream(audio_user,
-					    CG2900_MC_PORT_FM_RX_0,
+					    CG2900_MC_PORT_FM_RX_1,
 					    CG2900_MC_PORT_I2S,
 					    0); /* chip doesn't care */
 	}
@@ -1661,6 +1664,8 @@ static int conn_start_i2s_to_fm_tx(struct audio_user *audio_user,
 					     &stream_priv);
 	} else {
 		struct mc_vs_port_cfg_fm fm_cfg;
+
+		memset(&fm_cfg, 0, sizeof(fm_cfg));
 
 		/* Configure port FM TX */
 		/* Expects 0-3 - same as user API - so no conversion needed */
@@ -2482,7 +2487,8 @@ static ssize_t audio_dev_read(struct file *filp, char __user *buf, size_t count,
 	bytes_to_copy = min(count, (unsigned int)(dev->stored_data_len));
 	if (bytes_to_copy < dev->stored_data_len)
 		CG2900_ERR("Not enough buffer to store all data. Throwing away "
-			   "rest of data.");
+			   "rest of data. Saved len: %d, stored_len: %d",
+			   count, dev->stored_data_len);
 
 	err = copy_to_user(buf, dev->stored_data, bytes_to_copy);
 	/*

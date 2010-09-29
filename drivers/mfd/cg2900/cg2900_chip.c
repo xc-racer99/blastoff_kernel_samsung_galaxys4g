@@ -13,37 +13,38 @@
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson CG2900 GPS/BT/FM controller.
  */
 
-#include <linux/module.h>
-#include <linux/workqueue.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/timer.h>
-#include <linux/skbuff.h>
+#include <asm/byteorder.h>
+#include <linux/firmware.h>
 #include <linux/gfp.h>
-#include <linux/stat.h>
-#include <linux/types.h>
-#include <linux/time.h>
+#include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/firmware.h>
-#include <linux/mutex.h>
+#include <linux/limits.h>
 #include <linux/list.h>
-#include <asm/byteorder.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/sched.h>
+#include <linux/skbuff.h>
+#include <linux/stat.h>
+#include <linux/time.h>
+#include <linux/timer.h>
+#include <linux/types.h>
+#include <linux/wait.h>
+#include <linux/workqueue.h>
+#include <linux/mfd/cg2900.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 
-#include <asm/byteorder.h>
-
-#include <linux/mfd/cg2900.h>
-#include <mach/cg2900_devices.h>
-#include "hci_defines.h"
 #include "cg2900_chip.h"
 #include "cg2900_core.h"
 #include "cg2900_debug.h"
+#include "hci_defines.h"
 
-#define LINE_BUFFER_LENGTH			128
-#define FILENAME_MAX				128
+/*
+ * Max length in bytes for line buffer used to parse settings and patch file.
+ * Must be max length of name plus characters used to define chip version.
+ */
+#define LINE_BUFFER_LENGTH			(NAME_MAX + 30)
 
 #define WQ_NAME					"cg2900_chip_wq"
 #define PATCH_INFO_FILE				"cg2900_patch_info.fw"
@@ -961,7 +962,7 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 			file_found = true;
 		} else
 			/* Zero the name buffer so it is clear to next read */
-			memset(*file_name, 0x00, FILENAME_MAX + 1);
+			memset(*file_name, 0x00, NAME_MAX + 1);
 	}
 	kfree(line_buffer);
 
@@ -1125,9 +1126,10 @@ error_handling:
  */
 static void work_power_off_chip(struct work_struct *work)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb = NULL;
 	u8 *h4_header;
 	struct cg2900_hci_logger_config *logger_config;
+	struct cg2900_platform_data *pf_data;
 
 	if (!work) {
 		CG2900_ERR("work == NULL");
@@ -1138,7 +1140,10 @@ static void work_power_off_chip(struct work_struct *work)
 	 * Get the VS Power Switch Off command to use based on connected
 	 * connectivity controller
 	 */
-	skb = cg2900_devices_get_power_switch_off_cmd(NULL);
+	pf_data = (struct cg2900_platform_data *)
+			cg2900_info->chip_dev.dev->platform_data;
+	if (pf_data->get_power_switch_off_cmd)
+		skb = pf_data->get_power_switch_off_cmd(NULL);
 
 	/*
 	 * Transmit the received command.
@@ -1421,6 +1426,39 @@ static bool handle_vs_write_file_block_cmd_complete(u8 *data)
 }
 
 /**
+ * handle_vs_write_file_block_cmd_status() - Handles HCI VS WriteFileBlock Command Status event.
+ * @status:	Returned status of WriteFileBlock command.
+ *
+ * Returns:
+ *   true,  if packet was handled internally,
+ *   false, otherwise.
+ */
+static bool handle_vs_write_file_block_cmd_status(u8 status)
+{
+	if ((cg2900_info->boot_state != BOOT_DOWNLOAD_PATCH) ||
+	    (cg2900_info->download_state != DOWNLOAD_PENDING))
+		return false;
+
+	/*
+	 * Only do something if there is an error. Otherwise we will wait for
+	 * CmdComplete.
+	 */
+	if (HCI_BT_ERROR_NO_ERROR != status) {
+		CG2900_ERR("Command status for WriteFileBlock received with"
+			   " error 0x%X", status);
+		SET_DOWNLOAD_STATE(DOWNLOAD_FAILED);
+		SET_BOOT_STATE(BOOT_FAILED);
+		if (cg2900_info->fw_file) {
+			release_firmware(cg2900_info->fw_file);
+			cg2900_info->fw_file = NULL;
+		}
+		create_work_item(work_reset_after_error);
+	}
+
+	return true;
+}
+
+/**
  * handle_vs_power_switch_off_cmd_complete() - Handles HCI VS PowerSwitchOff Command Complete event.
  * @data:	Pointer to received HCI data packet.
  *
@@ -1498,33 +1536,52 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 	/* skb cannot be NULL here so it is safe to de-reference */
 	u8 *data = &(skb->data[CG2900_SKB_RESERVE]);
 	struct hci_event_hdr *evt;
-	struct hci_ev_cmd_complete *cmd_complete;
 	u16 op_code;
 
 	evt = (struct hci_event_hdr *)data;
 
-	/* First check the event code. Only handle Command Complete Event */
-	if (HCI_EV_CMD_COMPLETE != evt->evt)
+	/* First check the event code. */
+	if (HCI_EV_CMD_COMPLETE == evt->evt) {
+		struct hci_ev_cmd_complete *cmd_complete;
+
+		data += sizeof(*evt);
+		cmd_complete = (struct hci_ev_cmd_complete *)data;
+
+		op_code = le16_to_cpu(cmd_complete->opcode);
+
+		CG2900_DBG_DATA("Received Command Complete: op_code = 0x%04X",
+				op_code);
+		/* Move to first byte after OCF */
+		data += sizeof(*cmd_complete);
+
+		if (op_code == HCI_OP_RESET)
+			pkt_handled = handle_reset_cmd_complete(data);
+		else if (op_code == CG2900_BT_OP_VS_STORE_IN_FS)
+			pkt_handled = handle_vs_store_in_fs_cmd_complete(data);
+		else if (op_code == CG2900_BT_OP_VS_WRITE_FILE_BLOCK)
+			pkt_handled =
+				handle_vs_write_file_block_cmd_complete(data);
+		else if (op_code == CG2900_BT_OP_VS_POWER_SWITCH_OFF)
+			pkt_handled =
+				handle_vs_power_switch_off_cmd_complete(data);
+		else if (op_code == CG2900_BT_OP_VS_SYSTEM_RESET)
+			pkt_handled = handle_vs_system_reset_cmd_complete(data);
+	} else if (HCI_EV_CMD_STATUS == evt->evt) {
+		struct hci_ev_cmd_status *cmd_status;
+
+		data += sizeof(*evt);
+		cmd_status = (struct hci_ev_cmd_status *)data;
+
+		op_code = le16_to_cpu(cmd_status->opcode);
+
+		CG2900_DBG_DATA("Received Command Status: op_code = 0x%04X",
+				op_code);
+
+		if (op_code == CG2900_BT_OP_VS_WRITE_FILE_BLOCK)
+			pkt_handled = handle_vs_write_file_block_cmd_status
+				(cmd_status->status);
+	} else
 		return false;
-
-	data += sizeof(*evt);
-	cmd_complete = (struct hci_ev_cmd_complete *)data;
-
-	op_code = le16_to_cpu(cmd_complete->opcode);
-
-	CG2900_DBG_DATA("Received Command Complete: op_code = 0x%04X", op_code);
-	data += sizeof(*cmd_complete); /* Move to first byte after OCF */
-
-	if (op_code == HCI_OP_RESET)
-		pkt_handled = handle_reset_cmd_complete(data);
-	else if (op_code == CG2900_BT_OP_VS_STORE_IN_FS)
-		pkt_handled = handle_vs_store_in_fs_cmd_complete(data);
-	else if (op_code == CG2900_BT_OP_VS_WRITE_FILE_BLOCK)
-		pkt_handled = handle_vs_write_file_block_cmd_complete(data);
-	else if (op_code == CG2900_BT_OP_VS_POWER_SWITCH_OFF)
-		pkt_handled = handle_vs_power_switch_off_cmd_complete(data);
-	else if (op_code == CG2900_BT_OP_VS_SYSTEM_RESET)
-		pkt_handled = handle_vs_system_reset_cmd_complete(data);
 
 	if (pkt_handled)
 		kfree_skb(skb);
@@ -2004,14 +2061,14 @@ static int __init cg2900_init(void)
 	}
 
 	/* Allocate file names that will be used, deallocated in cg2900_exit */
-	cg2900_info->patch_file_name = kzalloc(FILENAME_MAX + 1, GFP_ATOMIC);
+	cg2900_info->patch_file_name = kzalloc(NAME_MAX + 1, GFP_ATOMIC);
 	if (!cg2900_info->patch_file_name) {
 		CG2900_ERR("Couldn't allocate name buffer for patch file.");
 		err = -ENOMEM;
 		goto err_handling_destroy_wq;
 	}
 	/* Allocate file names that will be used, deallocated in cg2900_exit */
-	cg2900_info->settings_file_name = kzalloc(FILENAME_MAX + 1, GFP_ATOMIC);
+	cg2900_info->settings_file_name = kzalloc(NAME_MAX + 1, GFP_ATOMIC);
 	if (!cg2900_info->settings_file_name) {
 		CG2900_ERR("Couldn't allocate name buffers settings file.");
 		err = -ENOMEM;

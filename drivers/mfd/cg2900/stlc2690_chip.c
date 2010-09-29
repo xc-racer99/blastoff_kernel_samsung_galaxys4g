@@ -13,35 +13,38 @@
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson STLC2690 BT/FM controller.
  */
 
-#include <linux/module.h>
-#include <linux/workqueue.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/timer.h>
-#include <linux/skbuff.h>
+#include <asm/byteorder.h>
+#include <linux/firmware.h>
 #include <linux/gfp.h>
-#include <linux/stat.h>
-#include <linux/types.h>
-#include <linux/time.h>
+#include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/firmware.h>
-#include <linux/mutex.h>
+#include <linux/limits.h>
 #include <linux/list.h>
-#include <asm/byteorder.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/sched.h>
+#include <linux/skbuff.h>
+#include <linux/stat.h>
+#include <linux/time.h>
+#include <linux/timer.h>
+#include <linux/types.h>
+#include <linux/wait.h>
+#include <linux/workqueue.h>
+#include <linux/mfd/cg2900.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 
-#include <linux/mfd/cg2900.h>
-#include <mach/cg2900_devices.h>
 #include "hci_defines.h"
 #include "stlc2690_chip.h"
 #include "cg2900_core.h"
 #include "cg2900_debug.h"
 
-#define LINE_BUFFER_LENGTH			128
-#define FILENAME_MAX				128
+/*
+ * Max length in bytes for line buffer used to parse settings and patch file.
+ * Must be max length of name plus characters used to define chip version.
+ */
+#define LINE_BUFFER_LENGTH			(NAME_MAX + 30)
 
 #define WQ_NAME					"stlc2690_wq"
 #define PATCH_INFO_FILE				"cg2900_patch_info.fw"
@@ -428,7 +431,7 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 			file_found = true;
 		} else {
 			/* Zero the name buffer so it is clear to next read */
-			memset(*file_name, 0x00, FILENAME_MAX + 1);
+			memset(*file_name, 0x00, NAME_MAX + 1);
 		}
 	}
 	kfree(line_buffer);
@@ -1042,7 +1045,7 @@ static int __init stlc2690_init(void)
 	/*
 	 * Allocate file names that will be used, deallocated in stlc2690_exit.
 	 */
-	stlc2690_info->patch_file_name = kzalloc(FILENAME_MAX + 1, GFP_ATOMIC);
+	stlc2690_info->patch_file_name = kzalloc(NAME_MAX + 1, GFP_ATOMIC);
 	if (!stlc2690_info->patch_file_name) {
 		CG2900_ERR("Couldn't allocate name buffer for patch file.");
 		err = -ENOMEM;
@@ -1051,7 +1054,7 @@ static int __init stlc2690_init(void)
 	/*
 	 * Allocate file names that will be used, deallocated in stlc2690_exit.
 	 */
-	stlc2690_info->settings_file_name = kzalloc(FILENAME_MAX + 1,
+	stlc2690_info->settings_file_name = kzalloc(NAME_MAX + 1,
 						    GFP_ATOMIC);
 	if (!stlc2690_info->settings_file_name) {
 		CG2900_ERR("Couldn't allocate name buffers settings file.");

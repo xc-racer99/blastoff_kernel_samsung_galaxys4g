@@ -142,7 +142,8 @@ fw-shipped-$(CONFIG_YAM) += yam/1200.bin yam/9600.bin
 fw-shipped-$(CONFIG_MFD_CG2900) += cg2900_patch_info.fw cg2900_settings_info.fw \
 					STLC2600_R6_03_01.fw STLC2690_R6_03_A1_E5.fw \
 					STLC2600_R6_04_02.fw STLC2690_R6_04_A2.fw \
-					CG2900_1_0C4_1C5.fw CG2900_1_05_SOC_generic_V11_mod.fw
+					CG2900_1_0C4_1C5.fw CG2900_1_05_SOC_generic_V11_mod.fw \
+					CG2900_HREFP_pcm_SOC_2.0_1C1_V5.fw CG2900_BTARMSS_2.0P1C5.fw
 
 fw-shipped-$(CONFIG_RADIO_CG2900) += cg2900_fm_bt_src_coeff_info.fw cg2900_fm_ext_src_coeff_info.fw \
 					cg2900_fm_fm_coeff_info.fw cg2900_fm_fm_prog_info.fw \

@@ -13,20 +13,19 @@
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson connectivity controller.
  */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/skbuff.h>
-#include <linux/file.h>
-#include <linux/fs.h>
 #include <linux/device.h>
-#include <linux/poll.h>
-#include <linux/mutex.h>
-#include <linux/sched.h>
-#include <linux/miscdevice.h>
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/kernel.h>
 #include <linux/list.h>
-
+#include <linux/miscdevice.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/poll.h>
+#include <linux/sched.h>
+#include <linux/skbuff.h>
 #include <linux/mfd/cg2900.h>
-#include <mach/cg2900_devices.h>
+
 #include "cg2900_core.h"
 #include "cg2900_debug.h"
 
@@ -643,12 +642,12 @@ static void remove_dev(struct char_dev_user *dev_usr)
 
 /* External functions */
 
-void cg2900_char_devices_init(struct miscdevice *dev)
+void cg2900_char_devices_init(struct device *parent)
 {
 	CG2900_INFO("cg2900_char_devices_init");
 
-	if (!dev) {
-		CG2900_ERR("NULL supplied for dev");
+	if (!parent) {
+		CG2900_ERR("NULL supplied for parent");
 		return;
 	}
 
@@ -667,18 +666,18 @@ void cg2900_char_devices_init(struct miscdevice *dev)
 	mutex_init(&char_info->open_mutex);
 	INIT_LIST_HEAD(&char_info->dev_users);
 
-	setup_dev(dev->this_device, CG2900_BT_CMD);
-	setup_dev(dev->this_device, CG2900_BT_ACL);
-	setup_dev(dev->this_device, CG2900_BT_EVT);
-	setup_dev(dev->this_device, CG2900_FM_RADIO);
-	setup_dev(dev->this_device, CG2900_GNSS);
-	setup_dev(dev->this_device, CG2900_DEBUG);
-	setup_dev(dev->this_device, CG2900_STE_TOOLS);
-	setup_dev(dev->this_device, CG2900_HCI_LOGGER);
-	setup_dev(dev->this_device, CG2900_US_CTRL);
-	setup_dev(dev->this_device, CG2900_BT_AUDIO);
-	setup_dev(dev->this_device, CG2900_FM_RADIO_AUDIO);
-	setup_dev(dev->this_device, CG2900_CORE);
+	setup_dev(parent, CG2900_BT_CMD);
+	setup_dev(parent, CG2900_BT_ACL);
+	setup_dev(parent, CG2900_BT_EVT);
+	setup_dev(parent, CG2900_FM_RADIO);
+	setup_dev(parent, CG2900_GNSS);
+	setup_dev(parent, CG2900_DEBUG);
+	setup_dev(parent, CG2900_STE_TOOLS);
+	setup_dev(parent, CG2900_HCI_LOGGER);
+	setup_dev(parent, CG2900_US_CTRL);
+	setup_dev(parent, CG2900_BT_AUDIO);
+	setup_dev(parent, CG2900_FM_RADIO_AUDIO);
+	setup_dev(parent, CG2900_CORE);
 }
 
 void cg2900_char_devices_exit(void)

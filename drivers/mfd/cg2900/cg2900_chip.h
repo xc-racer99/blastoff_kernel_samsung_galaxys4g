@@ -246,6 +246,7 @@ struct bt_vs_reset_session_cfg_cmd {
 #define CG2900_MC_PORT_I2S				0x01
 #define CG2900_MC_PORT_BT_SCO				0x04
 #define CG2900_MC_PORT_FM_RX_0				0x07
+#define CG2900_MC_PORT_FM_RX_1				0x08
 #define CG2900_MC_PORT_FM_TX				0x09
 
 #define CG2900_MC_VS_PORT_CONFIG			0xFD64

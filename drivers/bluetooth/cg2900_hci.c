@@ -30,49 +30,32 @@
 #include <linux/timer.h>
 
 #include <linux/mfd/cg2900.h>
-#include <mach/cg2900_devices.h>
 
-/* module_param declared in cg2900_core.c */
-extern int cg2900_debug_level;
+#define BT_VS_BT_ENABLE			0xFF10
 
-#define NAME			"CG2900 HCI"
+#define VS_BT_DISABLE			0x00
+#define VS_BT_ENABLE			0x01
 
-/* Debug defines */
-#define CG2900_DBG_DATA(fmt, arg...)				\
+#define BT_HEADER_LENGTH		0x03
+
+#define STLC2690_HCI_REV		0x0600
+#define CG2900_PG1_HCI_REV		0x0101
+#define CG2900_PG2_HCI_REV		0x0200
+#define CG2900_PG1_SPECIAL_HCI_REV	0x0700
+
+#define NAME				"CG2900 HCI"
+
+#define CG2900_SET_STATE(__name, __var, __new_state)		\
 do {								\
-	if (cg2900_debug_level >= 25)				\
-		printk(KERN_DEBUG NAME " %s: " fmt "\n" , __func__ , ## arg); \
-} while (0)
-
-#define CG2900_DBG(fmt, arg...)				\
-do {								\
-	if (cg2900_debug_level >= 20)				\
-		printk(KERN_DEBUG NAME " %s: " fmt "\n" , __func__ , ## arg); \
-} while (0)
-
-#define CG2900_INFO(fmt, arg...)				\
-do {								\
-	if (cg2900_debug_level >= 10)				\
-		printk(KERN_INFO NAME ": " fmt "\n" , ## arg); \
-} while (0)
-
-#define CG2900_ERR(fmt, arg...)					\
-do {								\
-	if (cg2900_debug_level >= 1)				\
-		printk(KERN_ERR NAME " %s: " fmt "\n" , __func__ , ## arg); \
-} while (0)
-
-#define CG2900_SET_STATE(__name, __var, __new_state)			\
-do {									\
-	CG2900_DBG("New %s: 0x%X", __name, (uint32_t)__new_state);	\
-	__var = __new_state;						\
+	BT_DBG("New %s: 0x%X", __name, (uint32_t)__new_state);	\
+	__var = __new_state;					\
 } while (0)
 
 /* HCI device type */
-#define HCI_CG2900		HCI_VIRTUAL
+#define HCI_CG2900			HCI_VIRTUAL
 
 /* Wait for 5 seconds for a response to our requests */
-#define RESP_TIMEOUT		5000
+#define RESP_TIMEOUT			5000
 
 /* State-setting defines */
 #define SET_RESET_STATE(__hci_reset_new_state) \
@@ -83,8 +66,8 @@ do {									\
 			 __hci_enable_new_state)
 
 /* Bluetooth error codes */
-#define HCI_ERR_NO_ERROR			0x00
-#define HCI_ERR_CMD_DISALLOWED			0x0C
+#define HCI_ERR_NO_ERROR		0x00
+#define HCI_ERR_CMD_DISALLOWED		0x0C
 
 /**
  * enum reset_state - RESET-states of the HCI driver.
@@ -157,8 +140,18 @@ struct dev_info {
 	u8		hci_data_type;
 };
 
-/* Variables where LSB and MSB for bt_enable command is stored */
-static u16 bt_enable_cmd;
+/**
+ * struct vs_bt_enable_cmd - Specifies HCI VS Bluetooth_Enable command.
+ *
+ * @op_code:	HCI command op code.
+ * @len:	Parameter length of command.
+ * @enable:	0 for disable BT, 1 for enable BT.
+ */
+struct vs_bt_enable_cmd {
+	__le16	op_code;
+	u8	len;
+	u8	enable;
+} __attribute__((packed));
 
 static struct hci_info *hci_info;
 
@@ -171,6 +164,49 @@ static DECLARE_WAIT_QUEUE_HEAD(hci_wait_queue);
 static int register_to_bluez(void);
 
 /* Internal functions */
+
+/**
+ * get_bt_enable_cmd() - Get HCI BT enable command.
+ * @bt_enable:	true if Bluetooth IP shall be enabled, false otherwise.
+ *
+ * Returns:
+ *   NULL if no command shall be sent,
+ *   sk_buffer with command otherwise.
+ */
+struct sk_buff *get_bt_enable_cmd(bool bt_enable)
+{
+	struct sk_buff *skb;
+	struct vs_bt_enable_cmd *cmd;
+	struct cg2900_rev_data rev_data;
+
+	if (!cg2900_get_local_revision(&rev_data)) {
+		BT_ERR(NAME "Couldn't get revision");
+		return NULL;
+	}
+
+	/* If connected chip does not support the command return NULL */
+	if (CG2900_PG1_SPECIAL_HCI_REV != rev_data.revision &&
+	    CG2900_PG1_HCI_REV != rev_data.revision &&
+	    CG2900_PG2_HCI_REV != rev_data.revision)
+		return NULL;
+
+	/* CG2900 used */
+	skb = cg2900_alloc_skb(sizeof(*cmd), GFP_KERNEL);
+	if (!skb) {
+		BT_ERR("Could not allocate skb");
+		return NULL;
+	}
+
+	cmd = (struct vs_bt_enable_cmd *)skb_put(skb, sizeof(*cmd));
+	cmd->op_code = cpu_to_le16(BT_VS_BT_ENABLE);
+	cmd->len = sizeof(*cmd) - BT_HEADER_LENGTH;
+	if (bt_enable)
+		cmd->enable = VS_BT_ENABLE;
+	else
+		cmd->enable = VS_BT_DISABLE;
+
+	return skb;
+}
 
 /**
  * remove_bt_users() - Unregister and remove any existing BT users.
@@ -215,19 +251,19 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 	u8 status;
 
 	if (!skb) {
-		CG2900_ERR("NULL supplied for skb");
+		BT_ERR("NULL supplied for skb");
 		return;
 	}
 
 	if (!dev) {
-		CG2900_ERR("dev == NULL");
+		BT_ERR("dev == NULL");
 		goto fin_free_skb;
 	}
 
 	dev_info = (struct dev_info *)dev->user_data;
 
 	if (!dev_info) {
-		CG2900_ERR("dev_info == NULL");
+		BT_ERR("dev_info == NULL");
 		goto fin_free_skb;
 	}
 
@@ -243,7 +279,7 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 	     hci_info->enable_state == ENABLE_WAITING_BT_DISABLED_CC) &&
 	    hci_info->bt_evt->h4_channel == dev->h4_channel &&
 	    evt->evt == HCI_EV_CMD_COMPLETE &&
-	    le16_to_cpu(cmd_complete->opcode) == bt_enable_cmd) {
+	    le16_to_cpu(cmd_complete->opcode) == BT_VS_BT_ENABLE) {
 		/*
 		 * This is the command complete event for
 		 * the HCI_Cmd_VS_Bluetooth_Enable.
@@ -257,7 +293,7 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 		status = *(skb->data + sizeof(*evt) + sizeof(*cmd_complete));
 		if (status != HCI_ERR_NO_ERROR &&
 		    status != HCI_ERR_CMD_DISALLOWED) {
-			CG2900_ERR("Could not enable/disable BT core (0x%X)",
+			BT_ERR("Could not enable/disable BT core (0x%X)",
 				   status);
 			SET_ENABLE_STATE(ENABLE_BT_ERROR);
 			goto fin_free_skb;
@@ -265,10 +301,10 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 
 		if (hci_info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) {
 			SET_ENABLE_STATE(ENABLE_BT_ENABLED);
-			CG2900_INFO("BT core is enabled");
+			BT_INFO("BT core is enabled");
 		} else {
 			SET_ENABLE_STATE(ENABLE_BT_DISABLED);
-			CG2900_INFO("BT core is disabled");
+			BT_INFO("BT core is disabled");
 		}
 
 		/* Wake up whom ever is waiting for this result. */
@@ -278,13 +314,13 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 		    hci_info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) &&
 		   hci_info->bt_evt->h4_channel == dev->h4_channel &&
 		   evt->evt == HCI_EV_CMD_STATUS &&
-		   le16_to_cpu(cmd_status->opcode) == bt_enable_cmd) {
+		   le16_to_cpu(cmd_status->opcode) == BT_VS_BT_ENABLE) {
 		/*
 		 * Clear the status events since the Bluez is not expecting
 		 * them.
 		 */
-		CG2900_DBG("HCI Driver received Command Status(for "
-			   "BT enable): 0x%X", cmd_status->status);
+		BT_DBG("HCI Driver received Command Status (BT enable): 0x%X",
+		       cmd_status->status);
 		/*
 		 * This is the command status event for
 		 * the HCI_Cmd_VS_Bluetooth_Enable.
@@ -301,14 +337,13 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 		else
 			dev_info->hdev->stat.evt_rx++;
 
-		CG2900_DBG_DATA("Data receive %d bytes", skb->len);
+		BT_DBG("Data receive %d bytes", skb->len);
 
 		/* Provide BlueZ with received frame*/
 		err = hci_recv_frame(skb);
 		/* If err, skb have been freed in hci_recv_frame() */
 		if (err)
-			CG2900_ERR("Failed in supplying packet to BlueZ (%d)",
-				   err);
+			BT_ERR("Failed in supplying packet to BlueZ (%d)", err);
 	}
 
 	return;
@@ -328,28 +363,28 @@ static void hci_reset_cb(struct cg2900_device *dev)
 	struct dev_info *dev_info;
 	struct hci_info *info;
 
-	CG2900_INFO("BluezDriver: hci_reset_cb");
+	BT_INFO("BluezDriver: hci_reset_cb");
 
 	if (!dev) {
-		CG2900_ERR("NULL supplied for dev");
+		BT_ERR("NULL supplied for dev");
 		return;
 	}
 
 	dev_info = (struct dev_info *)dev->user_data;
 	if (!dev_info) {
-		CG2900_ERR("NULL supplied for dev_info");
+		BT_ERR("NULL supplied for dev_info");
 		return;
 	}
 
 	hdev = dev_info->hdev;
 	if (!hdev) {
-		CG2900_ERR("NULL supplied for hdev");
+		BT_ERR("NULL supplied for hdev");
 		return;
 	}
 
 	info = (struct hci_info *)hdev->driver_data;
 	if (!info) {
-		CG2900_ERR("NULL supplied for driver_data");
+		BT_ERR("NULL supplied for driver_data");
 		return;
 	}
 
@@ -368,8 +403,7 @@ static void hci_reset_cb(struct cg2900_device *dev)
 		break;
 
 	default:
-		CG2900_ERR("Unknown HCI data type:%d",
-			   dev_info->hci_data_type);
+		BT_ERR("Unknown HCI data type:%d", dev_info->hci_data_type);
 		return;
 	}
 
@@ -391,10 +425,10 @@ static void hci_reset_cb(struct cg2900_device *dev)
 	 * Deregister HCI device. Close and Destruct functions should
 	 * in turn be called by BlueZ.
 	 */
-	CG2900_INFO("Deregister HCI device");
+	BT_INFO("Deregister HCI device");
 	err = hci_unregister_dev(hdev);
 	if (err)
-		CG2900_ERR("Can not deregister HCI device! (%d)", err);
+		BT_ERR("Can not deregister HCI device! (%d)", err);
 		/*
 		 * Now we are in trouble. Try to register a new hdev
 		 * anyway even though this will cost some memory.
@@ -408,13 +442,13 @@ static void hci_reset_cb(struct cg2900_device *dev)
 		 * Now we are in trouble. Try to register a new hdev
 		 * anyway even though this will cost some memory.
 		 */
-		CG2900_ERR("Timeout expired. Could not deregister HCI device");
+		BT_ERR("Timeout expired. Could not deregister HCI device");
 
 	/* Init and register hdev */
-	CG2900_INFO("Register HCI device");
+	BT_INFO("Register HCI device");
 	err = register_to_bluez();
 	if (err)
-		CG2900_ERR("HCI Device registration error (%d).", err);
+		BT_ERR("HCI Device registration error (%d).", err);
 }
 
 /*
@@ -449,21 +483,21 @@ static int open_from_hci(struct hci_dev *hdev)
 	struct sk_buff *enable_cmd;
 	int err;
 
-	CG2900_INFO("Open ST-Ericsson connectivity HCI driver");
+	BT_INFO("Open ST-Ericsson connectivity HCI driver");
 
 	if (!hdev) {
-		CG2900_ERR("NULL supplied for hdev");
+		BT_ERR("NULL supplied for hdev");
 		return -EINVAL;
 	}
 
 	info = (struct hci_info *)hdev->driver_data;
 	if (!info) {
-		CG2900_ERR("NULL supplied for driver_data");
+		BT_ERR("NULL supplied for driver_data");
 		return -EINVAL;
 	}
 
 	if (test_and_set_bit(HCI_RUNNING, &(hdev->flags))) {
-		CG2900_ERR("Device already opened!");
+		BT_ERR("Device already opened!");
 		return -EBUSY;
 	}
 
@@ -478,7 +512,7 @@ static int open_from_hci(struct hci_dev *hdev)
 			}
 			info->bt_cmd->user_data = dev_info;
 		} else {
-			CG2900_ERR("Couldn't register CG2900_BT_CMD to CG2900");
+			BT_ERR("Couldn't register CG2900_BT_CMD to CG2900");
 			err = -EACCES;
 			goto handle_error;
 		}
@@ -495,7 +529,7 @@ static int open_from_hci(struct hci_dev *hdev)
 			}
 			info->bt_evt->user_data = dev_info;
 		} else {
-			CG2900_ERR("Couldn't register CG2900_BT_EVT to CG2900");
+			BT_ERR("Couldn't register CG2900_BT_EVT to CG2900");
 			err = -EACCES;
 			goto handle_error;
 		}
@@ -512,7 +546,7 @@ static int open_from_hci(struct hci_dev *hdev)
 			}
 			info->bt_acl->user_data = dev_info;
 		} else {
-			CG2900_ERR("Couldn't register CG2900_BT_ACL to CG2900");
+			BT_ERR("Couldn't register CG2900_BT_ACL to CG2900");
 			err = -EACCES;
 			goto handle_error;
 		}
@@ -527,7 +561,7 @@ static int open_from_hci(struct hci_dev *hdev)
 	 * If NULL is returned, then no bt_enable command should be sent to the
 	 * chip.
 	 */
-	enable_cmd = cg2900_devices_get_bt_enable_cmd(&bt_enable_cmd, true);
+	enable_cmd = get_bt_enable_cmd(true);
 	if (!enable_cmd) {
 		/* The chip is enabled by default */
 		SET_ENABLE_STATE(ENABLE_BT_ENABLED);
@@ -549,7 +583,7 @@ static int open_from_hci(struct hci_dev *hdev)
 				msecs_to_jiffies(RESP_TIMEOUT));
 	/* Check the current state to se that it worked. */
 	if (info->enable_state != ENABLE_BT_ENABLED) {
-		CG2900_ERR("Could not enable BT core (%d)", info->enable_state);
+		BT_ERR("Could not enable BT core (%d)", info->enable_state);
 		err = -EACCES;
 		SET_ENABLE_STATE(ENABLE_BT_DISABLED);
 		goto handle_error;
@@ -574,10 +608,10 @@ handle_error:
  */
 static int flush_from_hci(struct hci_dev *hdev)
 {
-	CG2900_INFO("flush_from_hci");
+	BT_INFO("flush_from_hci");
 
 	if (!hdev) {
-		CG2900_ERR("NULL supplied for hdev");
+		BT_ERR("NULL supplied for hdev");
 		return -EINVAL;
 	}
 
@@ -602,21 +636,21 @@ static int close_from_hci(struct hci_dev *hdev)
 	struct hci_info *info = NULL;
 	struct sk_buff *enable_cmd;
 
-	CG2900_INFO("close_from_hci");
+	BT_INFO("close_from_hci");
 
 	if (!hdev) {
-		CG2900_ERR("NULL supplied for hdev");
+		BT_ERR("NULL supplied for hdev");
 		return -EINVAL;
 	}
 
 	info = (struct hci_info *)hdev->driver_data;
 	if (!info) {
-		CG2900_ERR("NULL supplied for driver_data");
+		BT_ERR("NULL supplied for driver_data");
 		return -EINVAL;
 	}
 
 	if (!test_and_clear_bit(HCI_RUNNING, &(hdev->flags))) {
-		CG2900_ERR("Device already closed!");
+		BT_ERR("Device already closed!");
 		return -EBUSY;
 	}
 
@@ -632,7 +666,7 @@ static int close_from_hci(struct hci_dev *hdev)
 	 * If NULL is returned, then no BT Enable command should be sent to the
 	 * chip.
 	 */
-	enable_cmd = cg2900_devices_get_bt_enable_cmd(&bt_enable_cmd, false);
+	enable_cmd = get_bt_enable_cmd(false);
 	if (!enable_cmd) {
 		/*
 		 * The chip is enabled by default and we should not disable it.
@@ -656,7 +690,7 @@ static int close_from_hci(struct hci_dev *hdev)
 				msecs_to_jiffies(RESP_TIMEOUT));
 	/* Check the current state to se that it worked. */
 	if (info->enable_state != ENABLE_BT_DISABLED) {
-		CG2900_ERR("Could not disable BT core.");
+		BT_ERR("Could not disable BT core.");
 		SET_ENABLE_STATE(ENABLE_BT_ENABLED);
 	}
 
@@ -685,41 +719,41 @@ static int send_from_hci(struct sk_buff *skb)
 	int err = 0;
 
 	if (!skb) {
-		CG2900_ERR("NULL supplied for skb");
+		BT_ERR("NULL supplied for skb");
 		return -EINVAL;
 	}
 
 	hdev = (struct hci_dev *)(skb->dev);
 	if (!hdev) {
-		CG2900_ERR("NULL supplied for hdev");
+		BT_ERR("NULL supplied for hdev");
 		return -EINVAL;
 	}
 
 	info = (struct hci_info *)hdev->driver_data;
 	if (!info) {
-		CG2900_ERR("NULL supplied for info");
+		BT_ERR("NULL supplied for info");
 		return -EINVAL;
 	}
 
 	/* Update BlueZ stats */
 	hdev->stat.byte_tx += skb->len;
 
-	CG2900_DBG_DATA("Data transmit %d bytes", skb->len);
+	BT_DBG("Data transmit %d bytes", skb->len);
 
 	switch (bt_cb(skb)->pkt_type) {
 	case HCI_COMMAND_PKT:
-		CG2900_DBG("Sending HCI_COMMAND_PKT");
+		BT_DBG("Sending HCI_COMMAND_PKT");
 		err = cg2900_write(info->bt_cmd, skb);
 		hdev->stat.cmd_tx++;
 		break;
 	case HCI_ACLDATA_PKT:
-		CG2900_DBG("Sending HCI_ACLDATA_PKT");
+		BT_DBG("Sending HCI_ACLDATA_PKT");
 		err = cg2900_write(info->bt_acl, skb);
 		hdev->stat.acl_tx++;
 		break;
 	default:
-		CG2900_ERR("Trying to transmit unsupported packet type "
-			   "(0x%.2X)", bt_cb(skb)->pkt_type);
+		BT_ERR("Trying to transmit unsupported packet type (0x%.2X)",
+		       bt_cb(skb)->pkt_type);
 		err = -EOPNOTSUPP;
 		break;
 	};
@@ -733,7 +767,7 @@ static int send_from_hci(struct sk_buff *skb)
  */
 static void destruct_from_hci(struct hci_dev *hdev)
 {
-	CG2900_INFO("destruct_from_hci");
+	BT_INFO("destruct_from_hci");
 
 	if (!hci_info)
 		return;
@@ -753,7 +787,7 @@ static void destruct_from_hci(struct hci_dev *hdev)
  */
 static void notify_from_hci(struct hci_dev *hdev, unsigned int evt)
 {
-	CG2900_INFO("notify_from_hci - evt = 0x%.2X", evt);
+	BT_INFO("notify_from_hci - evt = 0x%.2X", evt);
 }
 
 /**
@@ -769,13 +803,12 @@ static void notify_from_hci(struct hci_dev *hdev, unsigned int evt)
 static int ioctl_from_hci(struct hci_dev *hdev, unsigned int cmd,
 			  unsigned long arg)
 {
-	CG2900_INFO("ioctl_from_hci - cmd 0x%X", cmd);
-	CG2900_DBG("DIR: %d, TYPE: %d, NR: %d, SIZE: %d",
-		   _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd),
-		   _IOC_SIZE(cmd));
+	BT_INFO("ioctl_from_hci - cmd 0x%X", cmd);
+	BT_DBG("DIR: %d, TYPE: %d, NR: %d, SIZE: %d",
+	       _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd), _IOC_SIZE(cmd));
 
 	if (!hdev) {
-		CG2900_ERR("NULL supplied for hdev");
+		BT_ERR("NULL supplied for hdev");
 		return -EINVAL;;
 	}
 
@@ -798,7 +831,7 @@ static int register_to_bluez(void)
 
 	hci_info->hdev = hci_alloc_dev();
 	if (!hci_info->hdev) {
-		CG2900_ERR("Could not allocate mem for HCI driver");
+		BT_ERR("Could not allocate mem for HCI driver");
 		return -ENOMEM;
 	}
 
@@ -815,7 +848,7 @@ static int register_to_bluez(void)
 
 	err = hci_register_dev(hci_info->hdev);
 	if (err) {
-		CG2900_ERR("Can not register HCI device (%d)", err);
+		BT_ERR("Can not register HCI device (%d)", err);
 		hci_free_dev(hci_info->hdev);
 	}
 
@@ -838,19 +871,19 @@ static int register_to_bluez(void)
 static int __init hci_init(void)
 {
 	int err;
-	CG2900_INFO("hci_init");
+	BT_INFO("hci_init");
 
 	/* Initialize private data. */
 	hci_info = kzalloc(sizeof(*hci_info), GFP_KERNEL);
 	if (!hci_info) {
-		CG2900_ERR("Could not alloc hci_info struct.");
+		BT_ERR("Could not alloc hci_info struct.");
 		return -ENOMEM;
 	}
 
 	/* Init and register hdev */
 	err = register_to_bluez();
 	if (err) {
-		CG2900_ERR("HCI Device registration error (%d)", err);
+		BT_ERR("HCI Device registration error (%d)", err);
 		kfree(hci_info);
 		hci_info = NULL;
 		return err;
@@ -868,7 +901,7 @@ static void __exit hci_exit(void)
 {
 	int err = 0;
 
-	CG2900_INFO("hci_exit");
+	BT_INFO("hci_exit");
 
 	if (!hci_info)
 		return;
@@ -878,7 +911,7 @@ static void __exit hci_exit(void)
 
 	err = hci_unregister_dev(hci_info->hdev);
 	if (err)
-		CG2900_ERR("Can not unregister HCI device (%d)", err);
+		BT_ERR("Can not unregister HCI device (%d)", err);
 	hci_free_dev(hci_info->hdev);
 
 finished:

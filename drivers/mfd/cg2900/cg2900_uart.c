@@ -13,33 +13,33 @@
  * Linux Bluetooth UART Driver for ST-Ericsson CG2900 connectivity controller.
  */
 
-#include <linux/module.h>
-#include <linux/workqueue.h>
-#include <linux/timer.h>
-#include <linux/types.h>
+#include <asm/byteorder.h>
 #include <linux/device.h>
-#include <linux/skbuff.h>
-#include <linux/pm.h>
 #include <linux/gpio.h>
+#include <linux/irq.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/pm.h>
+#include <linux/poll.h>
+#include <linux/sched.h>
+#include <linux/skbuff.h>
+#include <linux/timer.h>
 #include <linux/tty.h>
 #include <linux/tty_ldisc.h>
-#include <linux/poll.h>
-#include <linux/timer.h>
-#include <linux/mutex.h>
-#include <linux/sched.h>
-#include <asm/byteorder.h>
+#include <linux/types.h>
+#include <linux/workqueue.h>
+#include <linux/mfd/cg2900.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 
-#include <linux/mfd/cg2900.h>
-#include <mach/cg2900_devices.h>
-#include "cg2900_core.h"
 #include "cg2900_chip.h"
+#include "cg2900_core.h"
 #include "cg2900_debug.h"
 #include "hci_defines.h"
 
 /* Workqueues' names */
 #define UART_WQ_NAME		"cg2900_uart_wq"
+#define UART_NAME		"cg2900_uart"
 
 /* Standardized Bluetooth command channels */
 #define HCI_BT_CMD_H4_CHANNEL	0x01
@@ -214,6 +214,7 @@ struct uart_info {
 	struct file			*fd;
 	struct mutex			sleep_state_lock;
 	bool				sleep_allowed;
+	struct device			*dev;
 };
 
 static struct uart_info *uart_info;
@@ -223,6 +224,8 @@ static int uart_default_baud = DEFAULT_BAUD_RATE;
 static int uart_high_baud = HIGH_BAUD_RATE;
 
 static DECLARE_WAIT_QUEUE_HEAD(uart_wait_queue);
+
+static void update_timer(void);
 
 /**
  * is_chip_flow_off() - Check if chip has set flow off.
@@ -242,6 +245,43 @@ static bool is_chip_flow_off(struct tty_struct *tty)
 		return false;
 	else
 		return true;
+}
+
+/**
+ * create_work_item() - Create work item and add it to the work queue.
+ * @wq:		work queue struct where the work will be added.
+ * @work_func:	Work function.
+ * @data:	Private data for the work.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EBUSY if not possible to queue work.
+ *   -ENOMEM if allocation fails.
+ */
+static int create_work_item(struct workqueue_struct *wq, work_func_t work_func,
+			    void *data)
+{
+	struct uart_work_struct *new_work;
+	int err;
+
+	new_work = kmalloc(sizeof(*new_work), GFP_ATOMIC);
+	if (!new_work) {
+		CG2900_ERR("Failed to alloc memory for uart_work_struct!");
+		return -ENOMEM;
+	}
+
+	new_work->data = data;
+	INIT_WORK(&new_work->work, work_func);
+
+	err = queue_work(wq, &new_work->work);
+	if (!err) {
+		CG2900_ERR("Failed to queue work_struct because it's already "
+			   "in the queue!");
+		kfree(new_work);
+		return -EBUSY;
+	}
+
+	return 0;
 }
 
 /**
@@ -292,6 +332,100 @@ static bool set_tty_baud(struct tty_struct *tty, int baud)
 }
 
 /**
+ * handle_cts_irq() - Called to handle CTS interrupt in work context.
+ * @work:	work which needs to be done.
+ *
+ * The handle_cts_irq() function is a work handler called if interrupt on CTS
+ * occurred. It updates the sleep timer which will wake up the transport.
+ */
+static void handle_cts_irq(struct work_struct *work)
+{
+	/* Restart timer and disable interrupt. */
+	update_timer();
+}
+
+/**
+ * cts_interrupt() - Called to handle CTS interrupt.
+ * @irq:	Interrupt that occurred.
+ * @dev_id:	Device ID where interrupt occurred (not used).
+ *
+ * The handle_cts_irq() function is called if interrupt on CTS occurred.
+ * It disables the interrupt and starts a new work thread to handle
+ * the interrupt.
+ */
+static irqreturn_t cts_interrupt(int irq, void *dev_id)
+{
+	disable_irq_nosync(irq);
+
+	/* Create work and leave IRQ context. */
+	(void)create_work_item(uart_info->wq, handle_cts_irq, NULL);
+
+	return IRQ_HANDLED;
+}
+
+/**
+ * set_cts_irq() - Enable interrupt on CTS.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   Error codes from request_irq and disable_uart.
+ */
+static int set_cts_irq(void)
+{
+	int err;
+	struct cg2900_platform_data *pf_data;
+
+	pf_data = (struct cg2900_platform_data *)uart_info->dev->platform_data;
+
+	/* First disable the UART so we can use IRQ on the GPIOs */
+	if (pf_data->uart.disable_uart) {
+		err = pf_data->uart.disable_uart();
+		if (err) {
+			CG2900_ERR("Could not disable UART (%d)", err);
+			goto error;
+		}
+	}
+
+	/* Set IRQ on CTS. */
+	err = request_irq(pf_data->uart.cts_irq,
+			  cts_interrupt,
+			  IRQF_TRIGGER_FALLING,
+			  UART_NAME,
+			  NULL);
+	if (err) {
+		CG2900_ERR("Could not request CTS IRQ (%d)", err);
+		goto error;
+	}
+
+	return 0;
+
+error:
+	if (pf_data->uart.enable_uart)
+		(void)pf_data->uart.enable_uart();
+	return err;
+}
+
+/**
+ * unset_cts_irq() - Disable interrupt on CTS.
+ */
+static void unset_cts_irq(void)
+{
+	int err = 0;
+	struct cg2900_platform_data *pf_data;
+
+	pf_data = (struct cg2900_platform_data *)uart_info->dev->platform_data;
+
+	/* Free CTS interrupt and restore UART settings. */
+	free_irq(pf_data->uart.cts_irq, NULL);
+
+	if (pf_data->uart.enable_uart) {
+		err = pf_data->uart.enable_uart();
+		if (err)
+			CG2900_ERR("Unable to enable UART Hardware (%d)", err);
+	}
+}
+
+/**
  * update_timer() - Updates or starts the sleep timer.
  *
  * Updates or starts the sleep timer used to detect when there are no current
@@ -317,14 +451,14 @@ static void update_timer(void)
 
 	if (CHIP_ASLEEP == uart_info->sleep_state) {
 		/* Disable IRQ only when it was enabled. */
-		cg2900_devices_unset_cts_irq();
+		unset_cts_irq();
 		(void)set_tty_baud(tty, uart_info->baud_rate);
 	}
 	/* Set FLOW on. */
 	tty_unthrottle(tty);
 
 	/* Unset BREAK. */
-
+	CG2900_DBG("Clear break");
 	tty->ops->break_ctl(tty, TTY_BREAK_OFF);
 
 	SET_SLEEP_STATE(CHIP_AWAKE);
@@ -372,17 +506,19 @@ static void sleep_timer_expired(unsigned long data)
 		 */
 		(void)set_tty_baud(tty, ZERO_BAUD_RATE);
 
-		if (cg2900_devices_set_cts_irq() < 0) {
-			CG2900_ERR("Can not set intterupt on CTS.");
+		if (set_cts_irq() < 0) {
+			CG2900_ERR("Can not set interrupt on CTS.");
 			(void)set_tty_baud(tty, uart_info->baud_rate);
 			tty_unthrottle(tty);
 			SET_SLEEP_STATE(CHIP_AWAKE);
 			goto error;
 		}
+
 		SET_SLEEP_STATE(CHIP_ASLEEP);
 		break;
 	case CHIP_AWAKE:
 
+		CG2900_DBG("Set break");
 		tty->ops->break_ctl(tty, TTY_BREAK_ON);
 
 		SET_SLEEP_STATE(CHIP_FALLING_ASLEEP);
@@ -475,77 +611,6 @@ static struct sk_buff *alloc_rx_skb(unsigned int size, gfp_t priority)
 }
 
 /**
- * create_work_item() - Create work item and add it to the work queue.
- * @wq:		work queue struct where the work will be added.
- * @work_func:	Work function.
- * @data:	Private data for the work.
- *
- * Returns:
- *   0 if there is no error.
- *   -EBUSY if not possible to queue work.
- *   -ENOMEM if allocation fails.
- */
-static int create_work_item(struct workqueue_struct *wq, work_func_t work_func,
-			    void *data)
-{
-	struct uart_work_struct *new_work;
-	int err;
-
-	new_work = kmalloc(sizeof(*new_work), GFP_ATOMIC);
-	if (!new_work) {
-		CG2900_ERR("Failed to alloc memory for uart_work_struct!");
-		return -ENOMEM;
-	}
-
-	new_work->data = data;
-	INIT_WORK(&new_work->work, work_func);
-
-	err = queue_work(wq, &new_work->work);
-	if (!err) {
-		CG2900_ERR("Failed to queue work_struct because it's already "
-			   "in the queue!");
-		kfree(new_work);
-		return -EBUSY;
-	}
-
-	return 0;
-}
-
-/**
- * handle_cts_irq() - Called to interrupt.
- * @work:	work which needs to be done.
- *
- * The handle_cts_irq() function is called if interrupt on
- * CTS occurred.
- *
- */
-static void handle_cts_irq(struct work_struct *work)
-{
-	/* Restart timer and disabale interrupt. */
-	update_timer();
-}
-
-/**
- * cg2900_devices_irq_cb() - Called from ste_conn_devices.
- *
- * The cg2900_devices_irq_cb() function is called if interrupt on CTS occurred.
- *
- */
-static void cg2900_devices_irq_cb(void)
-{
-	/* Create work and leave irq context. */
-	(void)create_work_item(uart_info->wq, handle_cts_irq, NULL);
-}
-
-/*
-  * struct uart_cg2900_dev_cb - Interrupt callback.
-  * @interrupt_cb: Called when interrupt on CTS occurred.
- */
-static struct cg2900_devices_cb uart_cg2900_dev_cb = {
-	.interrupt_cb = cg2900_devices_irq_cb
-};
-
-/**
  * finish_setting_baud_rate() - Handles sending the ste baud rate hci cmd.
  * @tty:	Pointer to a tty_struct used to communicate with tty driver.
  *
@@ -570,6 +635,8 @@ static void finish_setting_baud_rate(struct tty_struct *tty)
 		SET_BAUD_STATE(BAUD_WAITING);
 	} else
 		SET_BAUD_STATE(BAUD_IDLE);
+
+	tty_unthrottle(tty);
 }
 
 /**
@@ -793,6 +860,8 @@ static int set_baud_rate(int baud)
 		return -EFAULT;
 	}
 
+	tty_throttle(tty);
+
 	/*
 	 * Store old baud rate so that we can restore it if something goes
 	 * wrong.
@@ -906,10 +975,12 @@ static int uart_open(struct cg2900_trans_dev *dev)
 		SET_BAUD_STATE(BAUD_IDLE);
 		return -EIO;
 	}
-	/* Register interrupt callback into cg2900_devices.*/
-	cg2900_devices_reg_cb(&uart_cg2900_dev_cb);
 
-	return set_baud_rate(uart_high_baud);;
+	/* Just return if there will be no change of baud rate */
+	if (uart_default_baud != uart_high_baud)
+		return set_baud_rate(uart_high_baud);
+	else
+		return 0;
 }
 
 /**
@@ -920,6 +991,7 @@ static void uart_set_chip_power(bool chip_on)
 {
 	int uart_baudrate = uart_default_baud;
 	struct tty_struct *tty;
+	struct cg2900_platform_data *pf_data;
 
 	CG2900_INFO("uart_set_chip_power: %s",
 		    (chip_on ? "ENABLE" : "DISABLE"));
@@ -931,10 +1003,14 @@ static void uart_set_chip_power(bool chip_on)
 		return;
 	}
 
-	if (chip_on)
-		cg2900_devices_enable_chip();
-	else {
-		cg2900_devices_disable_chip();
+	pf_data = (struct cg2900_platform_data *)uart_info->dev->platform_data;
+
+	if (chip_on) {
+		if (pf_data->enable_chip)
+			pf_data->enable_chip();
+	} else {
+		if (pf_data->disable_chip)
+			pf_data->disable_chip();
 		/*
 		 * Setting baud rate to 0 will tell UART driver to shut off its
 		 * clocks.
@@ -1302,14 +1378,14 @@ static int uart_tty_open(struct tty_struct *tty)
 	tty_driver_flush_buffer(tty);
 
 	/* Tell CG2900 Core that UART is connected */
-	err = cg2900_register_trans_driver(&uart_cb, NULL);
+	err = cg2900_register_trans_driver(&uart_cb, NULL, &uart_info->dev);
 	if (err)
 		CG2900_ERR("Could not register transport driver (%d)", err);
 
 	if (tty->ops->tiocmget && tty->ops->break_ctl)
 		uart_info->sleep_allowed = true;
 	else
-		CG2900_DBG("Sleep mode not available.");
+		CG2900_ERR("Sleep mode not available.");
 
 	return err;
 

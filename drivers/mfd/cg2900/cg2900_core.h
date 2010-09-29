@@ -16,8 +16,8 @@
 #ifndef _CG2900_CORE_H_
 #define _CG2900_CORE_H_
 
-#include <linux/skbuff.h>
 #include <linux/device.h>
+#include <linux/skbuff.h>
 
 /* Reserve 1 byte for the HCI H:4 header */
 #define CG2900_SKB_RESERVE			1
@@ -185,6 +185,7 @@ extern int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb);
  * cg2900_register_trans_driver() - Register a transport driver.
  * @cb:		Callbacks to call when chip is connected.
  * @data:	Arbitrary data used by the transport driver.
+ * @dev:	Main device for the CG2900 driver (to be filled in).
  *
  * Returns:
  *   0 if there is no error.
@@ -192,7 +193,7 @@ extern int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb);
  *   -ENOMEM if allocation fails or work queue can't be created.
  */
 extern int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb,
-					void *data);
+					void *data, struct device **dev);
 
 /**
  * cg2900_deregister_trans_driver() - Deregister a transport driver.

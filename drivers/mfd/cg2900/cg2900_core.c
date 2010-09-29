@@ -13,33 +13,33 @@
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson CG2900 GPS/BT/FM controller.
  */
 
-#include <linux/module.h>
-#include <linux/workqueue.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/timer.h>
-#include <linux/skbuff.h>
+#include <asm/byteorder.h>
+#include <linux/firmware.h>
+#include <linux/fs.h>
 #include <linux/gfp.h>
-#include <linux/stat.h>
-#include <linux/types.h>
-#include <linux/time.h>
+#include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/firmware.h>
-#include <linux/mutex.h>
 #include <linux/list.h>
 #include <linux/miscdevice.h>
-#include <linux/fs.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/poll.h>
-#include <asm/byteorder.h>
+#include <linux/sched.h>
+#include <linux/skbuff.h>
+#include <linux/stat.h>
+#include <linux/time.h>
+#include <linux/timer.h>
+#include <linux/types.h>
+#include <linux/wait.h>
+#include <linux/workqueue.h>
+#include <linux/mfd/cg2900.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 
-#include <linux/mfd/cg2900.h>
-#include <mach/cg2900_devices.h>
-#include "cg2900_core.h"
 #include "cg2900_char_devices.h"
+#include "cg2900_core.h"
 #include "cg2900_debug.h"
 #include "hci_defines.h"
 
@@ -236,11 +236,11 @@ struct trans_info {
  * @transport_state:	Current TRANSPORT-state of CG2900 Core.
  * @wq:			CG2900 Core workqueue.
  * @hci_logger_config:	Stores HCI logger configuration.
- * @dev:		Device structure for STE Connectivity driver.
  * @chip_dev:		Device structure for chip driver.
  * @h4_channels:	HCI H:4 channel used by this device.
  * @test_char_dev:	Stores information of test char dev.
  * @trans_info:		Stores information about current transport.
+ * @dev:		Device structure for STE Connectivity driver.
  */
 struct core_info {
 	struct cg2900_users		users;
@@ -250,20 +250,14 @@ struct core_info {
 	enum transport_state		transport_state;
 	struct workqueue_struct		*wq;
 	struct cg2900_hci_logger_config	hci_logger_config;
-	struct miscdevice		*dev;
 	struct cg2900_chip_dev		chip_dev;
 	struct cg2900_h4_channels	h4_channels;
 	struct test_char_dev_info	*test_char_dev;
 	struct trans_info		*trans_info;
+	struct device			*dev;
 };
 
-/*
- *	Internal variable declarations
- */
-
-/*
- * core_info - Main information object for CG2900 Core.
- */
+/* core_info - Main information object for CG2900 Core. */
 static struct core_info *core_info;
 
 /* Module parameters */
@@ -298,10 +292,6 @@ static DECLARE_WAIT_QUEUE_HEAD(main_wait_queue);
  * main_wait_queue - Char device Wait Queue in CG2900 Core.
  */
 static DECLARE_WAIT_QUEUE_HEAD(char_wait_queue);
-
-/*
- *	Internal functions
- */
 
 /**
  * free_user_dev - Frees user device and also sets it to NULL to inform caller.
@@ -987,6 +977,7 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 	struct cg2900_chip_callbacks *cb;
 	int err;
 	struct hci_rp_read_local_version *evt;
+	struct cg2900_platform_data *pf_data;
 
 	/* Check we're in the right state */
 	if ((core_info->main_state != CORE_BOOTING &&
@@ -1024,11 +1015,13 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 		   chip->lmp_pal_version, chip->manufacturer,
 		   chip->lmp_pal_subversion);
 
-	cg2900_devices_set_hci_revision(chip->hci_version,
-					chip->hci_revision,
-					chip->lmp_pal_version,
-					chip->lmp_pal_subversion,
-					chip->manufacturer);
+	pf_data = (struct cg2900_platform_data *)core_info->dev->platform_data;
+	if (pf_data->set_hci_revision)
+		pf_data->set_hci_revision(chip->hci_version,
+					  chip->hci_revision,
+					  chip->lmp_pal_version,
+					  chip->lmp_pal_subversion,
+					  chip->manufacturer);
 
 	/* Received good confirmation. Find handler for the chip. */
 	chip_info = &(core_info->chip_dev.chip);
@@ -1153,7 +1146,7 @@ static int test_char_dev_open(struct inode *inode, struct file *filp)
 	};
 
 	CG2900_INFO("test_char_dev_open");
-	return cg2900_register_trans_driver(&cb, NULL);
+	return cg2900_register_trans_driver(&cb, NULL, NULL);
 }
 
 /**
@@ -1325,8 +1318,7 @@ static int test_char_dev_create(void)
 	core_info->test_char_dev->test_miscdev.minor = MISC_DYNAMIC_MINOR;
 	core_info->test_char_dev->test_miscdev.name = CG2900_CDEV_NAME;
 	core_info->test_char_dev->test_miscdev.fops = &test_char_dev_fops;
-	core_info->test_char_dev->test_miscdev.parent =
-			core_info->dev->this_device;
+	core_info->test_char_dev->test_miscdev.parent = core_info->dev;
 
 	err = misc_register(&core_info->test_char_dev->test_miscdev);
 	if (err) {
@@ -1536,10 +1528,6 @@ static void work_hw_registered(struct work_struct *work)
 	kfree(current_work);
 }
 
-/*
- *	CG2900 API functions
- */
-
 struct cg2900_device *cg2900_register_user(char  *name,
 					   struct cg2900_callbacks *cb)
 {
@@ -1583,7 +1571,7 @@ struct cg2900_device *cg2900_register_user(char  *name,
 		CG2900_ERR("Couldn't find H4 channel for %s", name);
 		goto error_handling;
 	}
-	current_dev->dev = core_info->dev->this_device;
+	current_dev->dev = core_info->dev;
 	current_dev->cb = kmalloc(sizeof(*(current_dev->cb)),
 					 GFP_ATOMIC);
 	if (!current_dev->cb) {
@@ -1873,7 +1861,8 @@ int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb)
 }
 EXPORT_SYMBOL(cg2900_register_chip_driver);
 
-int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
+int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data,
+				 struct device **dev)
 {
 	int err;
 
@@ -1894,8 +1883,10 @@ int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
 	}
 
 	memcpy(&(core_info->trans_info->cb), cb, sizeof(*cb));
-	core_info->trans_info->dev.dev = core_info->dev->this_device;
+	core_info->trans_info->dev.dev = core_info->dev;
 	core_info->trans_info->dev.user_data = data;
+	if (dev)
+		*dev = core_info->dev;
 
 	err = create_work_item(core_info->wq, work_hw_registered, NULL);
 	if (err) {
@@ -2098,12 +2089,8 @@ transmit:
 }
 EXPORT_SYMBOL(cg2900_data_from_chip);
 
-/*
- * Module INIT and EXIT functions
- */
-
 /**
- * cg2900_init() - Initialize module.
+ * cg2900_probe() - Initialize module.
  *
  * The cg2900_init() function initialize the transport and CG2900 Core, then
  * register to the transport framework.
@@ -2111,20 +2098,29 @@ EXPORT_SYMBOL(cg2900_data_from_chip);
  * Returns:
  *   0 if success.
  *   -ENOMEM for failed alloc or structure creation.
- *   Error codes generated by cg2900_devices_init, alloc_chrdev_region,
+ *   Error codes generated by platform init, alloc_chrdev_region,
  *   class_create, device_create, core_init, tty_register_ldisc,
  *   create_work_item, cg2900_char_devices_init.
  */
-static int __init cg2900_init(void)
+static int __init cg2900_probe(struct platform_device *pdev)
 {
 	int err;
+	struct cg2900_platform_data *pf_data;
 
-	CG2900_INFO("cg2900_init");
+	CG2900_INFO("cg2900_probe");
 
-	err = cg2900_devices_init();
-	if (err) {
-		CG2900_ERR("Couldn't initialize cg2900_devices");
-		return err;
+	pf_data = (struct cg2900_platform_data *)pdev->dev.platform_data;
+	if (!pf_data) {
+		CG2900_ERR("Missing platform data");
+		return -EINVAL;
+	}
+
+	if (pf_data->init) {
+		err = pf_data->init();
+		if (err) {
+			CG2900_ERR("Platform init failed (%d)", err);
+			return err;
+		}
 	}
 
 	core_info = kzalloc(sizeof(*core_info), GFP_KERNEL);
@@ -2132,6 +2128,8 @@ static int __init cg2900_init(void)
 		CG2900_ERR("Couldn't allocate core_info");
 		return -ENOMEM;
 	}
+
+	core_info->dev = &pdev->dev;
 
 	/* Set the internal states */
 	core_info->main_state = CORE_INITIALIZING;
@@ -2152,24 +2150,7 @@ static int __init cg2900_init(void)
 		goto error_handling;
 	}
 
-	core_info->dev = kzalloc(sizeof(*(core_info->dev)), GFP_KERNEL);
-	if (!core_info->dev) {
-		CG2900_ERR("Couldn't allocate main device");
-		err = -ENOMEM;
-		goto error_handling_destroy_wq;
-	}
-
-	/* Prepare miscdevice struct before registering the device */
-	core_info->dev->minor = MISC_DYNAMIC_MINOR;
-	core_info->dev->name = CG2900_DEVICE_NAME;
-
-	err = misc_register(core_info->dev);
-	if (err) {
-		CG2900_ERR("Error %d registering main device!", err);
-		goto error_handling_dev_register;
-	}
-
-	core_info->chip_dev.dev = core_info->dev->this_device;
+	core_info->chip_dev.dev = core_info->dev;
 
 	/* Create and add test char device. */
 	err = test_char_dev_create();
@@ -2188,28 +2169,26 @@ static int __init cg2900_init(void)
 error_handling_test_destroy:
 	test_char_dev_destroy();
 error_handling_deregister:
-	misc_deregister(core_info->dev);
-error_handling_dev_register:
-	kfree(core_info->dev);
-	core_info->dev = NULL;
-error_handling_destroy_wq:
 	destroy_workqueue(core_info->wq);
 error_handling:
+	core_info->dev = NULL;
 	kfree(core_info);
 	core_info = NULL;
 	return err;
 }
 
 /**
- * cg2900_exit() - Remove module.
+ * cg2900_remove() - Remove module.
  */
-static void __exit cg2900_exit(void)
+static int __exit cg2900_remove(struct platform_device *pdev)
 {
-	CG2900_INFO("cg2900_exit");
+	struct cg2900_platform_data *pf_data;
+
+	CG2900_INFO("cg2900_remove");
 
 	if (!core_info) {
 		CG2900_ERR("CG2900 Core not initiated");
-		return;
+		return -ENOMEM;
 	}
 
 	/* Remove initialized character devices */
@@ -2229,8 +2208,6 @@ static void __exit cg2900_exit(void)
 	free_user_dev(&(core_info->users.us_ctrl));
 	free_user_dev(&(core_info->users.core));
 
-	misc_deregister(core_info->dev);
-	kfree(core_info->dev);
 	core_info->dev = NULL;
 
 	destroy_workqueue(core_info->wq);
@@ -2238,7 +2215,47 @@ static void __exit cg2900_exit(void)
 	kfree(core_info);
 	core_info = NULL;
 
-	cg2900_devices_exit();
+	pf_data = (struct cg2900_platform_data *)pdev->dev.platform_data;
+	if (!pf_data) {
+		CG2900_ERR("Missing platform data");
+		return -EINVAL;
+	}
+
+	if (pf_data->exit)
+		pf_data->exit();
+
+	return 0;
+}
+
+static struct platform_driver cg2900_driver = {
+	.driver = {
+		.name	= "cg2900",
+		.owner	= THIS_MODULE,
+	},
+	.probe	= cg2900_probe,
+	.remove	= __exit_p(cg2900_remove),
+};
+
+/**
+ * cg2900_init() - Initialize module.
+ *
+ * Registers platform driver.
+ */
+static int __init cg2900_init(void)
+{
+	CG2900_INFO("cg2900_init");
+	return platform_driver_register(&cg2900_driver);
+}
+
+/**
+ * cg2900_exit() - Remove module.
+ *
+ * Unregisters platform driver.
+ */
+static void __exit cg2900_exit(void)
+{
+	CG2900_INFO("cg2900_exit");
+	platform_driver_unregister(&cg2900_driver);
 }
 
 module_init(cg2900_init);

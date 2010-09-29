@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <asm-generic/errno-base.h>
-#include <mach/cg2900_devices.h>
 #include "cg2900_fm_driver.h"
 
 /*

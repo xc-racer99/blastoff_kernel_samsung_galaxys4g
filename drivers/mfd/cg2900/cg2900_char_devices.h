@@ -16,7 +16,7 @@
 #ifndef _CG2900_CHAR_DEVICES_H_
 #define _CG2900_CHAR_DEVICES_H_
 
-#include <linux/miscdevice.h>
+#include <linux/device.h>
 
 /**
  * cg2900_char_devices_init() - Initialize char device module.
@@ -26,7 +26,7 @@
  *   0 if success.
  *   Negative value upon error.
  */
-extern int cg2900_char_devices_init(struct miscdevice *parent);
+extern int cg2900_char_devices_init(struct device *parent);
 
 /**
  * cg2900_char_devices_exit() - Release the char device module.
