@@ -21,6 +21,7 @@
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/skbuff.h>
@@ -28,6 +29,8 @@
 
 #include "cg2900_core.h"
 #include "cg2900_debug.h"
+
+#define NAME					"CharDev "
 
 /* Ioctls */
 #define CG2900_CHAR_DEV_IOCTL_RESET		_IOW('U', 210, int)
@@ -86,14 +89,7 @@ struct char_info {
 	struct list_head	dev_users;
 };
 
-/* Internal variable declarations */
-
-/*
- * char_info - Main information object for char devices.
- */
 static struct char_info *char_info;
-
-/* ST-Ericsson CG2900 driver callbacks */
 
 /**
  * char_dev_read_cb() - Handle data received from controller.
@@ -106,7 +102,7 @@ static void char_dev_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 {
 	struct char_dev_user *char_dev = (struct char_dev_user *)dev->user_data;
 
-	CG2900_INFO("CharDev: char_dev_read_cb");
+	CG2900_INFO("char_dev_read_cb");
 
 	if (!char_dev) {
 		CG2900_ERR("No char dev! Exiting");
@@ -129,7 +125,7 @@ static void char_dev_reset_cb(struct cg2900_device *dev)
 {
 	struct char_dev_user *char_dev = (struct char_dev_user *)dev->user_data;
 
-	CG2900_INFO("CharDev: char_dev_reset_cb");
+	CG2900_INFO("char_dev_reset_cb");
 
 	if (!char_dev) {
 		CG2900_ERR("char_dev == NULL");
@@ -147,18 +143,10 @@ static void char_dev_reset_cb(struct cg2900_device *dev)
 	wake_up_interruptible(&char_dev->reset_wait_queue);
 }
 
-/*
- * struct char_cb - Callback structure for CG2900 user.
- * @read_cb:	Callback function called when data is received from the
- *		CG2900 driver.
- * @reset_cb:	Callback function called when the controller has been reset.
- */
 static struct cg2900_callbacks char_cb = {
 	.read_cb = char_dev_read_cb,
 	.reset_cb = char_dev_reset_cb
 };
-
-/* File operation functions */
 
 /**
  * char_dev_open() - Open char device.
@@ -200,7 +188,7 @@ static int char_dev_open(struct inode *inode, struct file *filp)
 
 	filp->private_data = dev;
 
-	CG2900_INFO("CharDev: char_dev_open %s", dev->name);
+	CG2900_INFO("char_dev_open %s", dev->name);
 
 	if (dev->dev) {
 		CG2900_ERR("Device already registered to CG2900 Driver");
@@ -244,7 +232,7 @@ static int char_dev_release(struct inode *inode, struct file *filp)
 	int err = 0;
 	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
 
-	CG2900_INFO("CharDev: char_dev_release");
+	CG2900_INFO("char_dev_release");
 
 	if (!dev) {
 		CG2900_ERR("Calling with NULL pointer");
@@ -294,7 +282,7 @@ static ssize_t char_dev_read(struct file *filp, char __user *buf, size_t count,
 	int bytes_to_copy;
 	int err = 0;
 
-	CG2900_INFO("CharDev: char_dev_read");
+	CG2900_INFO("char_dev_read");
 
 	if (!dev) {
 		CG2900_ERR("Calling with NULL pointer");
@@ -371,7 +359,7 @@ static ssize_t char_dev_write(struct file *filp, const char __user *buf,
 	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
 	int err = 0;
 
-	CG2900_INFO("CharDev: char_dev_write");
+	CG2900_INFO("char_dev_write");
 
 	if (!dev) {
 		CG2900_ERR("Calling with NULL pointer");
@@ -426,8 +414,7 @@ static long char_dev_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	struct cg2900_rev_data rev_data;
 	int err = 0;
 
-	CG2900_INFO("CharDev: char_dev_unlocked_ioctl cmd %d for %s", cmd,
-		    dev->name);
+	CG2900_INFO("char_dev_unlocked_ioctl cmd %d for %s", cmd, dev->name);
 	CG2900_DBG("DIR: %d, TYPE: %d, NR: %d, SIZE: %d",
 		     _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd),
 		     _IOC_SIZE(cmd));
@@ -563,7 +550,7 @@ static int setup_dev(struct device *parent, char *name)
 	int err = 0;
 	struct char_dev_user *dev_usr;
 
-	CG2900_INFO("CharDev: setup_dev");
+	CG2900_INFO(NAME "setup_dev");
 
 	dev_usr = kzalloc(sizeof(*dev_usr), GFP_KERNEL);
 	if (!dev_usr) {
@@ -622,7 +609,7 @@ err_free_usr:
  */
 static void remove_dev(struct char_dev_user *dev_usr)
 {
-	CG2900_INFO("CharDev: remove_dev");
+	CG2900_INFO(NAME "remove_dev");
 
 	if (!dev_usr)
 		return;
@@ -640,27 +627,33 @@ static void remove_dev(struct char_dev_user *dev_usr)
 	kfree(dev_usr);
 }
 
-/* External functions */
-
-void cg2900_char_devices_init(struct device *parent)
+/**
+ * cg2900_char_probe() - Initialize char device module.
+ * @pdev:	Platform device.
+ *
+ * Returns:
+ *   0 if success.
+ *   -ENOMEM if allocation fails.
+ *   -EACCES if device already have been initiated.
+ */
+static int __init cg2900_char_probe(struct platform_device *pdev)
 {
-	CG2900_INFO("cg2900_char_devices_init");
+	struct device *parent;
 
-	if (!parent) {
-		CG2900_ERR("NULL supplied for parent");
-		return;
-	}
+	CG2900_INFO("cg2900_char_probe");
 
 	if (char_info) {
 		CG2900_ERR("Char devices already initiated");
-		return;
+		return -EACCES;
 	}
+
+	parent = pdev->dev.parent;
 
 	/* Initialize private data. */
 	char_info = kzalloc(sizeof(*char_info), GFP_ATOMIC);
 	if (!char_info) {
 		CG2900_ERR("Could not alloc char_info struct.");
-		return;
+		return -ENOMEM;
 	}
 
 	mutex_init(&char_info->open_mutex);
@@ -678,17 +671,26 @@ void cg2900_char_devices_init(struct device *parent)
 	setup_dev(parent, CG2900_BT_AUDIO);
 	setup_dev(parent, CG2900_FM_RADIO_AUDIO);
 	setup_dev(parent, CG2900_CORE);
+
+	return 0;
 }
 
-void cg2900_char_devices_exit(void)
+/**
+ * cg2900_char_remove() - Release the char device module.
+ * @pdev:	Platform device.
+ *
+ * Returns:
+ *   0 if success (always success).
+ */
+static int __exit cg2900_char_remove(struct platform_device *pdev)
 {
 	struct list_head *cursor, *next;
 	struct char_dev_user *tmp;
 
-	CG2900_INFO("cg2900_char_devices_exit");
+	CG2900_INFO("cg2900_char_remove");
 
 	if (!char_info)
-		return;
+		return 0;
 
 	list_for_each_safe(cursor, next, &char_info->dev_users) {
 		tmp = list_entry(cursor, struct char_dev_user, list);
@@ -700,7 +702,42 @@ void cg2900_char_devices_exit(void)
 
 	kfree(char_info);
 	char_info = NULL;
+	return 0;
 }
+
+static struct platform_driver cg2900_char_driver = {
+	.driver = {
+		.name	= "cg2900-chardev",
+		.owner	= THIS_MODULE,
+	},
+	.probe	= cg2900_char_probe,
+	.remove	= __exit_p(cg2900_char_remove),
+};
+
+/**
+ * cg2900_char_init() - Initialize module.
+ *
+ * Registers platform driver.
+ */
+static int __init cg2900_char_init(void)
+{
+	CG2900_INFO("cg2900_char_init");
+	return platform_driver_register(&cg2900_char_driver);
+}
+
+/**
+ * cg2900_char_exit() - Remove module.
+ *
+ * Unregisters platform driver.
+ */
+static void __exit cg2900_char_exit(void)
+{
+	CG2900_INFO("cg2900_char_exit");
+	platform_driver_unregister(&cg2900_char_driver);
+}
+
+module_init(cg2900_char_init);
+module_exit(cg2900_char_exit);
 
 MODULE_AUTHOR("Henrik Possung ST-Ericsson");
 MODULE_AUTHOR("Par-Gunnar Hjalmdahl ST-Ericsson");

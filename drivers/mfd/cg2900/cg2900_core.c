@@ -35,10 +35,10 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/mfd/cg2900.h>
+#include <linux/mfd/core.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 
-#include "cg2900_char_devices.h"
 #include "cg2900_core.h"
 #include "cg2900_debug.h"
 #include "hci_defines.h"
@@ -368,14 +368,6 @@ static void transmit_skb_to_chip(struct sk_buff *skb, bool use_logger)
 		logger->cb->read_cb(logger, skb_log);
 
 transmit:
-	CG2900_DBG_DATA_CONTENT("Length: %d Data: %02X %02X %02X %02X %02X "
-				"%02X %02X %02X %02X %02X %02X %02X",
-				skb->len,
-				skb->data[0], skb->data[1], skb->data[2],
-				skb->data[3], skb->data[4], skb->data[5],
-				skb->data[6], skb->data[7], skb->data[8],
-				skb->data[9], skb->data[10], skb->data[11]);
-
 	if (trans_info && trans_info->cb.write) {
 		err = trans_info->cb.write(&trans_info->dev, skb);
 		if (err)
@@ -1015,7 +1007,7 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 		   chip->lmp_pal_version, chip->manufacturer,
 		   chip->lmp_pal_subversion);
 
-	pf_data = (struct cg2900_platform_data *)core_info->dev->platform_data;
+	pf_data = dev_get_platdata(core_info->dev);
 	if (pf_data->set_hci_revision)
 		pf_data->set_hci_revision(chip->hci_version,
 					  chip->hci_revision,
@@ -1528,6 +1520,15 @@ static void work_hw_registered(struct work_struct *work)
 	kfree(current_work);
 }
 
+/**
+ * cg2900_register_user() - Register CG2900 user.
+ * @name:	Name of HCI H:4 channel to register to.
+ * @cb:		Callback structure to use for the H:4 channel.
+ *
+ * Returns:
+ *   Pointer to CG2900 device structure if successful.
+ *   NULL upon failure.
+ */
 struct cg2900_device *cg2900_register_user(char  *name,
 					   struct cg2900_callbacks *cb)
 {
@@ -1648,6 +1649,10 @@ finished:
 }
 EXPORT_SYMBOL(cg2900_register_user);
 
+/**
+ * cg2900_deregister_user() - Remove registration of CG2900 user.
+ * @dev:	CG2900 device.
+ */
 void cg2900_deregister_user(struct cg2900_device *dev)
 {
 	int h4_channel;
@@ -1706,6 +1711,14 @@ void cg2900_deregister_user(struct cg2900_device *dev)
 }
 EXPORT_SYMBOL(cg2900_deregister_user);
 
+/**
+ * cg2900_reset() - Reset the CG2900 controller.
+ * @dev:	CG2900 device.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EACCES if driver has not been initialized.
+ */
 int cg2900_reset(struct cg2900_device *dev)
 {
 	CG2900_INFO("cg2900_reset");
@@ -1745,6 +1758,15 @@ int cg2900_reset(struct cg2900_device *dev)
 }
 EXPORT_SYMBOL(cg2900_reset);
 
+/**
+ * cg2900_alloc_skb() - Alloc an sk_buff structure for CG2900 handling.
+ * @size:	Size in number of octets.
+ * @priority:	Allocation priority, e.g. GFP_KERNEL.
+ *
+ * Returns:
+ *   Pointer to sk_buff buffer structure if successful.
+ *   NULL upon allocation failure.
+ */
 struct sk_buff *cg2900_alloc_skb(unsigned int size, gfp_t priority)
 {
 	struct sk_buff *skb;
@@ -1761,6 +1783,24 @@ struct sk_buff *cg2900_alloc_skb(unsigned int size, gfp_t priority)
 }
 EXPORT_SYMBOL(cg2900_alloc_skb);
 
+/**
+ * cg2900_write() - Send data to the connectivity controller.
+ * @dev: CG2900 device.
+ * @skb: Data packet.
+ *
+ * The cg2900_write() function sends data to the connectivity controller.
+ * If the return value is 0 the skb will be freed by the driver,
+ * otherwise it won't be freed.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EACCES if driver has not been initialized or trying to write while driver
+ *   is not active.
+ *   -EINVAL if NULL pointer was supplied.
+ *   -EPERM if operation is not permitted, e.g. trying to write to a channel
+ *   that doesn't handle write operations.
+ *   Error codes returned from core_enable_hci_logger.
+ */
 int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb)
 {
 	int err = 0;
@@ -1819,6 +1859,18 @@ int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb)
 }
 EXPORT_SYMBOL(cg2900_write);
 
+/**
+ * cg2900_get_local_revision() - Read revision of the connected controller.
+ * @rev_data:	Revision data structure to fill. Must be allocated by caller.
+ *
+ * The cg2900_get_local_revision() function returns the revision data of the
+ * local controller if available. If data is not available, e.g. because the
+ * controller has not yet been started this function will return false.
+ *
+ * Returns:
+ *   true if revision data is available.
+ *   false if no revision data is available.
+ */
 bool cg2900_get_local_revision(struct cg2900_rev_data *rev_data)
 {
 	BUG_ON(!core_info);
@@ -2089,10 +2141,48 @@ transmit:
 }
 EXPORT_SYMBOL(cg2900_data_from_chip);
 
+static struct cg2900_bt_platform_data cg2900_bt_data = {
+	.bus = HCI_UART,
+};
+
+static struct mfd_cell cg2900_devs[] = {
+	{
+		.name = "cg2900-bt",
+		.platform_data = &cg2900_bt_data,
+		.data_size = sizeof(cg2900_bt_data),
+	},
+	{
+		.name = "cg2900-fm",
+	},
+	{
+		.name = "cg2900-gnss",
+	},
+	{
+		.name = "cg2900-audio",
+	},
+	{
+		.name = "cg2900-core",
+	},
+	{
+		.name = "cg2900-chardev",
+	},
+	{
+		.name = "cg2900-uart",
+	},
+	{
+		.name = "cg2900-chip",
+	},
+	{
+		.name = "stlc2690-chip",
+	},
+};
+
 /**
  * cg2900_probe() - Initialize module.
  *
- * The cg2900_init() function initialize the transport and CG2900 Core, then
+ * @pdev:	Platform device.
+ *
+ * This function initialize the transport and CG2900 Core, then
  * register to the transport framework.
  *
  * Returns:
@@ -2100,7 +2190,7 @@ EXPORT_SYMBOL(cg2900_data_from_chip);
  *   -ENOMEM for failed alloc or structure creation.
  *   Error codes generated by platform init, alloc_chrdev_region,
  *   class_create, device_create, core_init, tty_register_ldisc,
- *   create_work_item, cg2900_char_devices_init.
+ *   create_work_item.
  */
 static int __init cg2900_probe(struct platform_device *pdev)
 {
@@ -2109,7 +2199,7 @@ static int __init cg2900_probe(struct platform_device *pdev)
 
 	CG2900_INFO("cg2900_probe");
 
-	pf_data = (struct cg2900_platform_data *)pdev->dev.platform_data;
+	pf_data = dev_get_platdata(&pdev->dev);
 	if (!pf_data) {
 		CG2900_ERR("Missing platform data");
 		return -EINVAL;
@@ -2150,17 +2240,17 @@ static int __init cg2900_probe(struct platform_device *pdev)
 		goto error_handling;
 	}
 
-	core_info->chip_dev.dev = core_info->dev;
-
 	/* Create and add test char device. */
 	err = test_char_dev_create();
 	if (err)
 		goto error_handling_deregister;
 
-	/* Initialize the character devices */
-	err = cg2900_char_devices_init(core_info->dev);
+	cg2900_bt_data.bus = pf_data->bus;
+
+	err = mfd_add_devices(core_info->dev, 0, cg2900_devs,
+			      ARRAY_SIZE(cg2900_devs), NULL, 0);
 	if (err) {
-		CG2900_ERR("cg2900_char_devices_init failed %d", err);
+		CG2900_ERR("Failed to add MFD devices (%d)", err);
 		goto error_handling_test_destroy;
 	}
 
@@ -2179,6 +2269,13 @@ error_handling:
 
 /**
  * cg2900_remove() - Remove module.
+ *
+ * @pdev:	Platform device.
+ *
+ * Returns:
+ *   0 if success.
+ *   -ENOMEM if core_info does not exist.
+ *   -EINVAL if platform data does not exist in the device.
  */
 static int __exit cg2900_remove(struct platform_device *pdev)
 {
@@ -2191,8 +2288,7 @@ static int __exit cg2900_remove(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	/* Remove initialized character devices */
-	cg2900_char_devices_exit();
+	mfd_remove_devices(core_info->dev);
 
 	test_char_dev_destroy();
 
@@ -2215,7 +2311,7 @@ static int __exit cg2900_remove(struct platform_device *pdev)
 	kfree(core_info);
 	core_info = NULL;
 
-	pf_data = (struct cg2900_platform_data *)pdev->dev.platform_data;
+	pf_data = dev_get_platdata(&pdev->dev);
 	if (!pf_data) {
 		CG2900_ERR("Missing platform data");
 		return -EINVAL;

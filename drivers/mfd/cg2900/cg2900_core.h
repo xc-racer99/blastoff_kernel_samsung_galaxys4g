@@ -119,13 +119,11 @@ struct cg2900_chip_callbacks {
 
 /**
  * struct cg2900_chip_dev - Chip handler info structure.
- * @dev:	Parent device from CG2900 Core.
  * @chip:	Chip info such as manufacturer.
  * @cb:		Callback structure for the chip handler.
  * @user_data:	Arbitrary data set by chip handler.
  */
 struct cg2900_chip_dev {
-	struct device			*dev;
 	struct cg2900_chip_info		chip;
 	struct cg2900_chip_callbacks	cb;
 	void				*user_data;

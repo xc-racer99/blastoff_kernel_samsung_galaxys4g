@@ -1,35 +1,33 @@
 /*
- * drivers/bluetooth/cg2900_hci.c
+ * Bluetooth driver for ST-Ericsson CG2900 connectivity controller.
  *
  * Copyright (C) ST-Ericsson SA 2010
- * Authors:
- * Par-Gunnar Hjalmdahl (par-gunnar.p.hjalmdahl@stericsson.com) for ST-Ericsson.
- * Henrik Possung (henrik.possung@stericsson.com) for ST-Ericsson.
- * Josef Kindberg (josef.kindberg@stericsson.com) for ST-Ericsson.
- * Dariusz Szymszak (dariusz.xd.szymczak@stericsson.com) for ST-Ericsson.
- * Kjell Andersson (kjell.k.andersson@stericsson.com) for ST-Ericsson.
- * License terms:  GNU General Public License (GPL), version 2
  *
- * Linux Bluetooth HCI H:4 Driver for ST-Ericsson CG2900 connectivity controller
- * towards the BlueZ Bluetooth stack.
+ * Authors:
+ * Par-Gunnar Hjalmdahl (par-gunnar.p.hjalmdahl@stericsson.com)
+ * Henrik Possung (henrik.possung@stericsson.com)
+ * Josef Kindberg (josef.kindberg@stericsson.com)
+ * Dariusz Szymszak (dariusz.xd.szymczak@stericsson.com)
+ * Kjell Andersson (kjell.k.andersson@stericsson.com)
+ *
+ * License terms:  GNU General Public License (GPL), version 2
  */
 
-#include <linux/module.h>
-#include <linux/types.h>
-#include <linux/skbuff.h>
 #include <asm/byteorder.h>
+#include <linux/jiffies.h>
+#include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/platform_device.h>
+#include <linux/skbuff.h>
+#include <linux/time.h>
+#include <linux/timer.h>
+#include <linux/types.h>
+#include <linux/wait.h>
+#include <linux/workqueue.h>
+#include <linux/mfd/cg2900.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 #include <net/bluetooth/hci_core.h>
-
-#include <linux/workqueue.h>
-#include <linux/wait.h>
-#include <linux/time.h>
-#include <linux/jiffies.h>
-#include <linux/sched.h>
-#include <linux/timer.h>
-
-#include <linux/mfd/cg2900.h>
 
 #define BT_VS_BT_ENABLE			0xFF10
 
@@ -43,27 +41,10 @@
 #define CG2900_PG2_HCI_REV		0x0200
 #define CG2900_PG1_SPECIAL_HCI_REV	0x0700
 
-#define NAME				"CG2900 HCI"
-
-#define CG2900_SET_STATE(__name, __var, __new_state)		\
-do {								\
-	BT_DBG("New %s: 0x%X", __name, (uint32_t)__new_state);	\
-	__var = __new_state;					\
-} while (0)
-
-/* HCI device type */
-#define HCI_CG2900			HCI_VIRTUAL
+#define NAME				"BTCG2900 "
 
 /* Wait for 5 seconds for a response to our requests */
 #define RESP_TIMEOUT			5000
-
-/* State-setting defines */
-#define SET_RESET_STATE(__hci_reset_new_state) \
-	CG2900_SET_STATE("reset_state", hci_info->reset_state, \
-			 __hci_reset_new_state)
-#define SET_ENABLE_STATE(__hci_enable_new_state) \
-	CG2900_SET_STATE("enable_state", hci_info->enable_state, \
-			 __hci_enable_new_state)
 
 /* Bluetooth error codes */
 #define HCI_ERR_NO_ERROR		0x00
@@ -109,28 +90,30 @@ enum enable_state {
 };
 
 /**
- * struct hci_info - Specifies HCI driver private data.
+ * struct btcg2900_info - Specifies HCI driver private data.
  *
  * This type specifies CG2900 HCI driver private data.
  *
  * @bt_cmd:		Device structure for BT command channel.
  * @bt_evt:		Device structure for BT event channel.
  * @bt_acl:		Device structure for BT ACL channel.
+ * @pdev:		Device structure for platform device.
  * @hdev:		Device structure for HCI device.
  * @reset_state:	Device enum for HCI driver reset state.
  * @enable_state:	Device enum for HCI driver BT enable state.
  */
-struct hci_info {
+struct btcg2900_info {
 	struct cg2900_device	*bt_cmd;
 	struct cg2900_device	*bt_evt;
 	struct cg2900_device	*bt_acl;
+	struct platform_device	*pdev;
 	struct hci_dev		*hdev;
 	enum reset_state	reset_state;
 	enum enable_state	enable_state;
 };
 
 /**
- * struct dev_info - Specifies private data used when receiving callbacks from CPD.
+ * struct dev_info - Specifies private data used when receiving callbacks from CG2900 driver.
  *
  * @hdev:		Device structure for HCI device.
  * @hci_data_type:	Type of data according to BlueZ.
@@ -153,7 +136,7 @@ struct vs_bt_enable_cmd {
 	u8	enable;
 } __attribute__((packed));
 
-static struct hci_info *hci_info;
+static struct btcg2900_info *btcg2900_info;
 
 /*
  * hci_wait_queue - Main Wait Queue in HCI driver.
@@ -161,7 +144,7 @@ static struct hci_info *hci_info;
 static DECLARE_WAIT_QUEUE_HEAD(hci_wait_queue);
 
 /* Internal function declarations */
-static int register_to_bluez(void);
+static int register_bluetooth(void);
 
 /* Internal functions */
 
@@ -193,7 +176,7 @@ struct sk_buff *get_bt_enable_cmd(bool bt_enable)
 	/* CG2900 used */
 	skb = cg2900_alloc_skb(sizeof(*cmd), GFP_KERNEL);
 	if (!skb) {
-		BT_ERR("Could not allocate skb");
+		BT_ERR(NAME "Could not allocate skb");
 		return NULL;
 	}
 
@@ -212,7 +195,7 @@ struct sk_buff *get_bt_enable_cmd(bool bt_enable)
  * remove_bt_users() - Unregister and remove any existing BT users.
  * @info:	HCI driver info structure.
  */
-static void remove_bt_users(struct hci_info *info)
+static void remove_bt_users(struct btcg2900_info *info)
 {
 	if (info->bt_cmd) {
 		kfree(info->bt_cmd->user_data);
@@ -251,19 +234,19 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 	u8 status;
 
 	if (!skb) {
-		BT_ERR("NULL supplied for skb");
+		BT_ERR(NAME "NULL supplied for skb");
 		return;
 	}
 
 	if (!dev) {
-		BT_ERR("dev == NULL");
+		BT_ERR(NAME "dev == NULL");
 		goto fin_free_skb;
 	}
 
 	dev_info = (struct dev_info *)dev->user_data;
 
 	if (!dev_info) {
-		BT_ERR("dev_info == NULL");
+		BT_ERR(NAME "dev_info == NULL");
 		goto fin_free_skb;
 	}
 
@@ -275,9 +258,9 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 	 * Check if HCI Driver it self is expecting a Command Complete packet
 	 * from the chip after a BT Enable command.
 	 */
-	if ((hci_info->enable_state == ENABLE_WAITING_BT_ENABLED_CC ||
-	     hci_info->enable_state == ENABLE_WAITING_BT_DISABLED_CC) &&
-	    hci_info->bt_evt->h4_channel == dev->h4_channel &&
+	if ((btcg2900_info->enable_state == ENABLE_WAITING_BT_ENABLED_CC ||
+	     btcg2900_info->enable_state == ENABLE_WAITING_BT_DISABLED_CC) &&
+	    btcg2900_info->bt_evt->h4_channel == dev->h4_channel &&
 	    evt->evt == HCI_EV_CMD_COMPLETE &&
 	    le16_to_cpu(cmd_complete->opcode) == BT_VS_BT_ENABLE) {
 		/*
@@ -293,26 +276,32 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 		status = *(skb->data + sizeof(*evt) + sizeof(*cmd_complete));
 		if (status != HCI_ERR_NO_ERROR &&
 		    status != HCI_ERR_CMD_DISALLOWED) {
-			BT_ERR("Could not enable/disable BT core (0x%X)",
+			BT_ERR(NAME "Could not enable/disable BT core (0x%X)",
 				   status);
-			SET_ENABLE_STATE(ENABLE_BT_ERROR);
+			BT_DBG("New enable_state: ENABLE_BT_ERROR");
+			btcg2900_info->enable_state = ENABLE_BT_ERROR;
 			goto fin_free_skb;
 		}
 
-		if (hci_info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) {
-			SET_ENABLE_STATE(ENABLE_BT_ENABLED);
-			BT_INFO("BT core is enabled");
+		if (btcg2900_info->enable_state ==
+				ENABLE_WAITING_BT_ENABLED_CC) {
+			BT_DBG("New enable_state: ENABLE_BT_ENABLED");
+			btcg2900_info->enable_state = ENABLE_BT_ENABLED;
+			BT_INFO("CG2900 BT core is enabled");
 		} else {
-			SET_ENABLE_STATE(ENABLE_BT_DISABLED);
-			BT_INFO("BT core is disabled");
+			BT_DBG("New enable_state: ENABLE_BT_DISABLED");
+			btcg2900_info->enable_state = ENABLE_BT_DISABLED;
+			BT_INFO("CG2900 BT core is disabled");
 		}
 
 		/* Wake up whom ever is waiting for this result. */
 		wake_up_interruptible(&hci_wait_queue);
 		goto fin_free_skb;
-	} else if ((hci_info->enable_state == ENABLE_WAITING_BT_DISABLED_CC ||
-		    hci_info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) &&
-		   hci_info->bt_evt->h4_channel == dev->h4_channel &&
+	} else if ((btcg2900_info->enable_state ==
+			ENABLE_WAITING_BT_DISABLED_CC ||
+		    btcg2900_info->enable_state ==
+			ENABLE_WAITING_BT_ENABLED_CC) &&
+		   btcg2900_info->bt_evt->h4_channel == dev->h4_channel &&
 		   evt->evt == HCI_EV_CMD_STATUS &&
 		   le16_to_cpu(cmd_status->opcode) == BT_VS_BT_ENABLE) {
 		/*
@@ -343,7 +332,8 @@ static void hci_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 		err = hci_recv_frame(skb);
 		/* If err, skb have been freed in hci_recv_frame() */
 		if (err)
-			BT_ERR("Failed in supplying packet to BlueZ (%d)", err);
+			BT_ERR(NAME "Failed in supplying packet to Bluetooth"
+			       " stack (%d)", err);
 	}
 
 	return;
@@ -361,30 +351,30 @@ static void hci_reset_cb(struct cg2900_device *dev)
 	int err;
 	struct hci_dev *hdev;
 	struct dev_info *dev_info;
-	struct hci_info *info;
+	struct btcg2900_info *info;
 
-	BT_INFO("BluezDriver: hci_reset_cb");
+	BT_INFO(NAME "hci_reset_cb");
 
 	if (!dev) {
-		BT_ERR("NULL supplied for dev");
+		BT_ERR(NAME "NULL supplied for dev");
 		return;
 	}
 
 	dev_info = (struct dev_info *)dev->user_data;
 	if (!dev_info) {
-		BT_ERR("NULL supplied for dev_info");
+		BT_ERR(NAME "NULL supplied for dev_info");
 		return;
 	}
 
 	hdev = dev_info->hdev;
 	if (!hdev) {
-		BT_ERR("NULL supplied for hdev");
+		BT_ERR(NAME "NULL supplied for hdev");
 		return;
 	}
 
-	info = (struct hci_info *)hdev->driver_data;
+	info = (struct btcg2900_info *)hdev->driver_data;
 	if (!info) {
-		BT_ERR("NULL supplied for driver_data");
+		BT_ERR(NAME "NULL supplied for driver_data");
 		return;
 	}
 
@@ -403,14 +393,18 @@ static void hci_reset_cb(struct cg2900_device *dev)
 		break;
 
 	default:
-		BT_ERR("Unknown HCI data type:%d", dev_info->hci_data_type);
+		BT_ERR(NAME "Unknown HCI data type:%d",
+		       dev_info->hci_data_type);
 		return;
 	}
 
-	SET_RESET_STATE(RESET_ACTIVATED);
+	BT_DBG("New reset_state: RESET_ACTIVATED");
+	btcg2900_info->reset_state = RESET_ACTIVATED;
 
-	/* Free userdata as device info structure will be freed by CG2900
-	 * when this callback returns */
+	/*
+	 * Free userdata as device info structure will be freed by CG2900
+	 * when this callback returns.
+	 */
 	kfree(dev->user_data);
 	dev->user_data = NULL;
 
@@ -425,30 +419,30 @@ static void hci_reset_cb(struct cg2900_device *dev)
 	 * Deregister HCI device. Close and Destruct functions should
 	 * in turn be called by BlueZ.
 	 */
-	BT_INFO("Deregister HCI device");
+	BT_DBG("Deregister HCI device");
 	err = hci_unregister_dev(hdev);
 	if (err)
-		BT_ERR("Can not deregister HCI device! (%d)", err);
+		BT_ERR(NAME "Can not deregister HCI device! (%d)", err);
 		/*
 		 * Now we are in trouble. Try to register a new hdev
 		 * anyway even though this will cost some memory.
 		 */
 
 	wait_event_interruptible_timeout(hci_wait_queue,
-				(RESET_UNREGISTERED == hci_info->reset_state),
-				msecs_to_jiffies(RESP_TIMEOUT));
-	if (RESET_UNREGISTERED != hci_info->reset_state)
+			(RESET_UNREGISTERED == btcg2900_info->reset_state),
+			msecs_to_jiffies(RESP_TIMEOUT));
+	if (RESET_UNREGISTERED != btcg2900_info->reset_state)
 		/*
 		 * Now we are in trouble. Try to register a new hdev
 		 * anyway even though this will cost some memory.
 		 */
-		BT_ERR("Timeout expired. Could not deregister HCI device");
+		BT_ERR(NAME "Timeout expired. Could not deregister HCI device");
 
 	/* Init and register hdev */
-	BT_INFO("Register HCI device");
-	err = register_to_bluez();
+	BT_DBG("Register HCI device");
+	err = register_bluetooth();
 	if (err)
-		BT_ERR("HCI Device registration error (%d).", err);
+		BT_ERR(NAME "HCI Device registration error (%d).", err);
 }
 
 /*
@@ -464,7 +458,7 @@ static struct cg2900_callbacks cg2900_cb = {
 };
 
 /**
- * open_from_hci() - Open HCI interface.
+ * btcg2900_open() - Open HCI interface.
  * @hdev:	HCI device being opened.
  *
  * BlueZ callback function for opening HCI interface to device.
@@ -476,28 +470,28 @@ static struct cg2900_callbacks cg2900_cb = {
  *   -EBUSY if device is already opened.
  *   -EACCES if opening of channels failed.
  */
-static int open_from_hci(struct hci_dev *hdev)
+static int btcg2900_open(struct hci_dev *hdev)
 {
-	struct hci_info *info;
+	struct btcg2900_info *info;
 	struct dev_info *dev_info;
 	struct sk_buff *enable_cmd;
 	int err;
 
-	BT_INFO("Open ST-Ericsson connectivity HCI driver");
+	BT_INFO("Open ST-Ericsson CG2900 driver");
 
 	if (!hdev) {
-		BT_ERR("NULL supplied for hdev");
+		BT_ERR(NAME "NULL supplied for hdev");
 		return -EINVAL;
 	}
 
-	info = (struct hci_info *)hdev->driver_data;
+	info = (struct btcg2900_info *)hdev->driver_data;
 	if (!info) {
-		BT_ERR("NULL supplied for driver_data");
+		BT_ERR(NAME "NULL supplied for driver_data");
 		return -EINVAL;
 	}
 
 	if (test_and_set_bit(HCI_RUNNING, &(hdev->flags))) {
-		BT_ERR("Device already opened!");
+		BT_ERR(NAME "Device already opened!");
 		return -EBUSY;
 	}
 
@@ -552,24 +546,28 @@ static int open_from_hci(struct hci_dev *hdev)
 		}
 	}
 
-	if (info->reset_state == RESET_ACTIVATED)
-		SET_RESET_STATE(RESET_IDLE);
+	if (info->reset_state == RESET_ACTIVATED) {
+		BT_DBG("New reset_state: RESET_IDLE");
+		btcg2900_info->reset_state = RESET_IDLE;
+	}
 
 	/*
-	 * Call platform specific function that returns the chip dependent
-	 * bt enable(true) HCI command.
+	 * Call function that returns the chip dependent vs_bt_enable(true)
+	 * HCI command.
 	 * If NULL is returned, then no bt_enable command should be sent to the
 	 * chip.
 	 */
 	enable_cmd = get_bt_enable_cmd(true);
 	if (!enable_cmd) {
 		/* The chip is enabled by default */
-		SET_ENABLE_STATE(ENABLE_BT_ENABLED);
+		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
+		btcg2900_info->enable_state = ENABLE_BT_ENABLED;
 		return 0;
 	}
 
 	/* Set the HCI state before sending command to chip. */
-	SET_ENABLE_STATE(ENABLE_WAITING_BT_ENABLED_CC);
+	BT_DBG("New enable_state: ENABLE_WAITING_BT_ENABLED_CC");
+	btcg2900_info->enable_state = ENABLE_WAITING_BT_ENABLED_CC;
 
 	/* Send command to chip */
 	cg2900_write(info->bt_cmd, enable_cmd);
@@ -583,9 +581,11 @@ static int open_from_hci(struct hci_dev *hdev)
 				msecs_to_jiffies(RESP_TIMEOUT));
 	/* Check the current state to se that it worked. */
 	if (info->enable_state != ENABLE_BT_ENABLED) {
-		BT_ERR("Could not enable BT core (%d)", info->enable_state);
+		BT_ERR("Could not enable CG2900 BT core (%d)",
+		       info->enable_state);
 		err = -EACCES;
-		SET_ENABLE_STATE(ENABLE_BT_DISABLED);
+		BT_DBG("New enable_state: ENABLE_BT_DISABLED");
+		btcg2900_info->enable_state = ENABLE_BT_DISABLED;
 		goto handle_error;
 	}
 
@@ -599,27 +599,7 @@ handle_error:
 }
 
 /**
- * flush_from_hci() - Flush HCI interface.
- * @hdev:	HCI device being flushed.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL if NULL pointer is supplied.
- */
-static int flush_from_hci(struct hci_dev *hdev)
-{
-	BT_INFO("flush_from_hci");
-
-	if (!hdev) {
-		BT_ERR("NULL supplied for hdev");
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-/**
- * close_from_hci() - Close HCI interface.
+ * btcg2900_close() - Close HCI interface.
  * @hdev:	HCI device being closed.
  *
  * BlueZ callback function for closing HCI interface.
@@ -631,33 +611,31 @@ static int flush_from_hci(struct hci_dev *hdev)
  *   -EOPNOTSUPP if supplied packet type is not supported.
  *   -EBUSY if device is not opened.
  */
-static int close_from_hci(struct hci_dev *hdev)
+static int btcg2900_close(struct hci_dev *hdev)
 {
-	struct hci_info *info = NULL;
+	struct btcg2900_info *info = NULL;
 	struct sk_buff *enable_cmd;
 
-	BT_INFO("close_from_hci");
+	BT_DBG("btcg2900_close");
 
 	if (!hdev) {
-		BT_ERR("NULL supplied for hdev");
+		BT_ERR(NAME "NULL supplied for hdev");
 		return -EINVAL;
 	}
 
-	info = (struct hci_info *)hdev->driver_data;
+	info = (struct btcg2900_info *)hdev->driver_data;
 	if (!info) {
-		BT_ERR("NULL supplied for driver_data");
+		BT_ERR(NAME "NULL supplied for driver_data");
 		return -EINVAL;
 	}
 
 	if (!test_and_clear_bit(HCI_RUNNING, &(hdev->flags))) {
-		BT_ERR("Device already closed!");
+		BT_ERR(NAME "Device already closed!");
 		return -EBUSY;
 	}
 
-	flush_from_hci(hdev);
-
 	/* Do not do this if there is an reset ongoing */
-	if (hci_info->reset_state == RESET_ACTIVATED)
+	if (btcg2900_info->reset_state == RESET_ACTIVATED)
 		goto remove_users;
 
 	/*
@@ -671,12 +649,14 @@ static int close_from_hci(struct hci_dev *hdev)
 		/*
 		 * The chip is enabled by default and we should not disable it.
 		 */
-		SET_ENABLE_STATE(ENABLE_BT_ENABLED);
+		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
+		btcg2900_info->enable_state = ENABLE_BT_ENABLED;
 		goto remove_users;
 	}
 
 	/* Set the HCI state before sending command to chip */
-	SET_ENABLE_STATE(ENABLE_WAITING_BT_DISABLED_CC);
+	BT_DBG("New enable_state: ENABLE_WAITING_BT_DISABLED_CC");
+	btcg2900_info->enable_state = ENABLE_WAITING_BT_DISABLED_CC;
 
 	/* Send command to chip */
 	cg2900_write(info->bt_cmd, enable_cmd);
@@ -690,8 +670,9 @@ static int close_from_hci(struct hci_dev *hdev)
 				msecs_to_jiffies(RESP_TIMEOUT));
 	/* Check the current state to se that it worked. */
 	if (info->enable_state != ENABLE_BT_DISABLED) {
-		BT_ERR("Could not disable BT core.");
-		SET_ENABLE_STATE(ENABLE_BT_ENABLED);
+		BT_ERR("Could not disable CG2900 BT core.");
+		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
+		btcg2900_info->enable_state = ENABLE_BT_ENABLED;
 	}
 
 remove_users:
@@ -701,7 +682,7 @@ remove_users:
 }
 
 /**
- * send_from_hci() - Send packet to device.
+ * btcg2900_send() - Send packet to device.
  * @skb:	sk buffer to be sent.
  *
  * BlueZ callback function for sending sk buffer.
@@ -712,26 +693,26 @@ remove_users:
  *   -EOPNOTSUPP if supplied packet type is not supported.
  *   Error codes from cg2900_write.
  */
-static int send_from_hci(struct sk_buff *skb)
+static int btcg2900_send(struct sk_buff *skb)
 {
 	struct hci_dev *hdev;
-	struct hci_info *info;
+	struct btcg2900_info *info;
 	int err = 0;
 
 	if (!skb) {
-		BT_ERR("NULL supplied for skb");
+		BT_ERR(NAME "NULL supplied for skb");
 		return -EINVAL;
 	}
 
 	hdev = (struct hci_dev *)(skb->dev);
 	if (!hdev) {
-		BT_ERR("NULL supplied for hdev");
+		BT_ERR(NAME "NULL supplied for hdev");
 		return -EINVAL;
 	}
 
-	info = (struct hci_info *)hdev->driver_data;
+	info = (struct btcg2900_info *)hdev->driver_data;
 	if (!info) {
-		BT_ERR("NULL supplied for info");
+		BT_ERR(NAME "NULL supplied for info");
 		return -EINVAL;
 	}
 
@@ -752,8 +733,8 @@ static int send_from_hci(struct sk_buff *skb)
 		hdev->stat.acl_tx++;
 		break;
 	default:
-		BT_ERR("Trying to transmit unsupported packet type (0x%.2X)",
-		       bt_cb(skb)->pkt_type);
+		BT_ERR(NAME "Trying to transmit unsupported packet type"
+		       " (0x%.2X)", bt_cb(skb)->pkt_type);
 		err = -EOPNOTSUPP;
 		break;
 	};
@@ -762,61 +743,35 @@ static int send_from_hci(struct sk_buff *skb)
 }
 
 /**
- * destruct_from_hci() - Destruct HCI interface.
+ * btcg2900_destruct() - Destruct HCI interface.
  * @hdev:	HCI device being destructed.
  */
-static void destruct_from_hci(struct hci_dev *hdev)
+static void btcg2900_destruct(struct hci_dev *hdev)
 {
-	BT_INFO("destruct_from_hci");
+	BT_DBG("btcg2900_destruct");
 
-	if (!hci_info)
+	if (!btcg2900_info)
 		return;
 
-	/* When being reset, register a new hdev when hdev is deregistered */
-	if (hci_info->reset_state == RESET_ACTIVATED) {
-		if (hci_info->hdev)
-			hci_free_dev(hci_info->hdev);
-		SET_RESET_STATE(RESET_UNREGISTERED);
+	/*
+	 * When destruct is called it means that the Bluetooth stack is done
+	 * with the HCI device and we can now free it.
+	 * Normally we do this only when removing the whole module through
+	 * btcg2900_remove(), but when being reset we free the device here and
+	 * we then set the reset state so that the reset handler can allocate a
+	 * new HCI device and then register it to the Bluetooth stack.
+	 */
+	if (btcg2900_info->reset_state == RESET_ACTIVATED) {
+		if (btcg2900_info->hdev)
+			hci_free_dev(btcg2900_info->hdev);
+		BT_DBG("New reset_state: RESET_UNREGISTERED");
+		btcg2900_info->reset_state = RESET_UNREGISTERED;
+		wake_up_interruptible(&hci_wait_queue);
 	}
 }
 
 /**
- * notify_from_hci() - Notification from the HCI interface.
- * @hdev:	HCI device notifying.
- * @evt:	Notification event.
- */
-static void notify_from_hci(struct hci_dev *hdev, unsigned int evt)
-{
-	BT_INFO("notify_from_hci - evt = 0x%.2X", evt);
-}
-
-/**
- * ioctl_from_hci() - Handle IOCTL call to the HCI interface.
- * @hdev: HCI device.
- * @cmd:  IOCTL command.
- * @arg:  IOCTL argument.
- *
- * Returns:
- *   -EINVAL if NULL is supplied for hdev.
- *   -EPERM otherwise since current driver supports no IOCTL.
- */
-static int ioctl_from_hci(struct hci_dev *hdev, unsigned int cmd,
-			  unsigned long arg)
-{
-	BT_INFO("ioctl_from_hci - cmd 0x%X", cmd);
-	BT_DBG("DIR: %d, TYPE: %d, NR: %d, SIZE: %d",
-	       _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd), _IOC_SIZE(cmd));
-
-	if (!hdev) {
-		BT_ERR("NULL supplied for hdev");
-		return -EINVAL;;
-	}
-
-	return -EPERM;
-}
-
-/**
- * register_to_bluez() - Initialize module.
+ * register_bluetooth() - Initialize module.
  *
  * Alloc, init, and register HCI device to BlueZ.
  *
@@ -825,67 +780,78 @@ static int ioctl_from_hci(struct hci_dev *hdev, unsigned int cmd,
  *   -ENOMEM if allocation fails.
  *   Error codes from hci_register_dev.
  */
-static int register_to_bluez(void)
+static int register_bluetooth(void)
 {
 	int err;
+	static struct cg2900_bt_platform_data *pf_data;
 
-	hci_info->hdev = hci_alloc_dev();
-	if (!hci_info->hdev) {
-		BT_ERR("Could not allocate mem for HCI driver");
+	pf_data = dev_get_platdata(&btcg2900_info->pdev->dev);
+
+	btcg2900_info->hdev = hci_alloc_dev();
+	if (!btcg2900_info->hdev) {
+		BT_ERR("Could not allocate mem for CG2900 BT driver");
 		return -ENOMEM;
 	}
 
-	hci_info->hdev->bus = HCI_CG2900;
-	hci_info->hdev->driver_data = hci_info;
-	hci_info->hdev->owner = THIS_MODULE;
-	hci_info->hdev->open = open_from_hci;
-	hci_info->hdev->close = close_from_hci;
-	hci_info->hdev->flush = flush_from_hci;
-	hci_info->hdev->send = send_from_hci;
-	hci_info->hdev->destruct = destruct_from_hci;
-	hci_info->hdev->notify = notify_from_hci;
-	hci_info->hdev->ioctl = ioctl_from_hci;
+	SET_HCIDEV_DEV(btcg2900_info->hdev, &btcg2900_info->pdev->dev);
+	if (pf_data) {
+		btcg2900_info->hdev->bus = pf_data->bus;
+	} else {
+		BT_DBG(NAME "Missing platform data. Defaulting to UART");
+		btcg2900_info->hdev->bus = HCI_UART;
+	}
+	btcg2900_info->hdev->driver_data = btcg2900_info;
+	btcg2900_info->hdev->owner = THIS_MODULE;
+	btcg2900_info->hdev->open = btcg2900_open;
+	btcg2900_info->hdev->close = btcg2900_close;
+	btcg2900_info->hdev->send = btcg2900_send;
+	btcg2900_info->hdev->destruct = btcg2900_destruct;
 
-	err = hci_register_dev(hci_info->hdev);
+	err = hci_register_dev(btcg2900_info->hdev);
 	if (err) {
-		BT_ERR("Can not register HCI device (%d)", err);
-		hci_free_dev(hci_info->hdev);
+		BT_ERR(NAME "Can not register HCI device (%d)", err);
+		hci_free_dev(btcg2900_info->hdev);
 	}
 
-	SET_ENABLE_STATE(ENABLE_IDLE);
-	SET_RESET_STATE(RESET_IDLE);
+	BT_DBG("New enable_state: ENABLE_IDLE");
+	btcg2900_info->enable_state = ENABLE_IDLE;
+	BT_DBG("New reset_state: RESET_IDLE");
+	btcg2900_info->reset_state = RESET_IDLE;
 
 	return err;
 }
 
 /**
- * hci_init() - Initialize module.
+ * btcg2900_probe() - Initialize module.
  *
- * Allocate and initialize private data. Register to BlueZ.
+ * Allocate and initialize private data. Register to Bluetooth stack.
  *
  * Returns:
  *   0 if there is no error.
  *   -ENOMEM if allocation fails.
- *   Error codes from register_to_bluez.
+ *   Error codes from register_bluetooth.
  */
-static int __init hci_init(void)
+static int __init btcg2900_probe(struct platform_device *pdev)
 {
 	int err;
-	BT_INFO("hci_init");
+
+	BT_INFO("btcg2900_probe");
 
 	/* Initialize private data. */
-	hci_info = kzalloc(sizeof(*hci_info), GFP_KERNEL);
-	if (!hci_info) {
-		BT_ERR("Could not alloc hci_info struct.");
+	btcg2900_info = kzalloc(sizeof(*btcg2900_info), GFP_KERNEL);
+	if (!btcg2900_info) {
+		BT_ERR("Could not alloc btcg2900_info struct.");
 		return -ENOMEM;
 	}
 
+	btcg2900_info->pdev = pdev;
+
 	/* Init and register hdev */
-	err = register_to_bluez();
+	err = register_bluetooth();
 	if (err) {
 		BT_ERR("HCI Device registration error (%d)", err);
-		kfree(hci_info);
-		hci_info = NULL;
+		kfree(btcg2900_info);
+		btcg2900_info = NULL;
 		return err;
 	}
 
@@ -893,34 +859,64 @@ static int __init hci_init(void)
 }
 
 /**
- * hci_exit() - Remove module.
- *
- * Remove HCI device from CG2900 driver.
+ * btcg2900_remove() - Remove module.
  */
-static void __exit hci_exit(void)
+static int __exit btcg2900_remove(struct platform_device *pdev)
 {
 	int err = 0;
 
-	BT_INFO("hci_exit");
+	BT_INFO("btcg2900_remove");
 
-	if (!hci_info)
-		return;
+	if (!btcg2900_info)
+		return 0;
 
-	if (!hci_info->hdev)
+	if (!btcg2900_info->hdev)
 		goto finished;
 
-	err = hci_unregister_dev(hci_info->hdev);
+	err = hci_unregister_dev(btcg2900_info->hdev);
 	if (err)
 		BT_ERR("Can not unregister HCI device (%d)", err);
-	hci_free_dev(hci_info->hdev);
+	hci_free_dev(btcg2900_info->hdev);
 
 finished:
-	kfree(hci_info);
-	hci_info = NULL;
+	kfree(btcg2900_info);
+	btcg2900_info = NULL;
+	return err;
 }
 
-module_init(hci_init);
-module_exit(hci_exit);
+static struct platform_driver btcg2900_driver = {
+	.driver = {
+		.name	= "cg2900-bt",
+		.owner	= THIS_MODULE,
+	},
+	.probe	= btcg2900_probe,
+	.remove	= __exit_p(btcg2900_remove),
+};
+
+/**
+ * btcg2900_init() - Initialize module.
+ *
+ * Registers platform driver.
+ */
+static int __init btcg2900_init(void)
+{
+	BT_INFO("btcg2900_init");
+	return platform_driver_register(&btcg2900_driver);
+}
+
+/**
+ * btcg2900_exit() - Remove module.
+ *
+ * Unregisters platform driver.
+ */
+static void __exit btcg2900_exit(void)
+{
+	BT_INFO("btcg2900_exit");
+	platform_driver_unregister(&btcg2900_driver);
+}
+
+module_init(btcg2900_init);
+module_exit(btcg2900_exit);
 
 MODULE_AUTHOR("Par-Gunnar Hjalmdahl ST-Ericsson");
 MODULE_AUTHOR("Henrik Possung ST-Ericsson");

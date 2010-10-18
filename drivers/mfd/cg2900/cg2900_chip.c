@@ -14,6 +14,7 @@
  */
 
 #include <asm/byteorder.h>
+#include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/gfp.h>
 #include <linux/init.h>
@@ -23,6 +24,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/skbuff.h>
 #include <linux/stat.h>
@@ -132,6 +134,7 @@
  *					patches.
  * @BOOT_ACTIVATE_PATCHES_AND_SETTINGS:	CG2900 chip driver is activating patches
  *					and settings.
+ * @BOOT_DISABLE_BT:			Disable BT Core.
  * @BOOT_READY:				CG2900 chip driver boot is ready.
  * @BOOT_FAILED:			CG2900 chip driver boot failed.
  */
@@ -141,6 +144,7 @@ enum boot_state {
 	BOOT_GET_FILES_TO_LOAD,
 	BOOT_DOWNLOAD_PATCH,
 	BOOT_ACTIVATE_PATCHES_AND_SETTINGS,
+	BOOT_DISABLE_BT,
 	BOOT_READY,
 	BOOT_FAILED
 };
@@ -219,6 +223,7 @@ struct cg2900_skb_data {
 
 /**
  * struct cg2900_info - Main info structure for CG2900 chip driver.
+ * @dev:			Device structure.
  * @patch_file_name:		Stores patch file name.
  * @settings_file_name:		Stores settings file name.
  * @fw_file:			Stores firmware file (patch or settings).
@@ -254,6 +259,7 @@ struct cg2900_skb_data {
  *				allowed is 0 (CG2900 internal flow control).
  */
 struct cg2900_info {
+	struct device			*dev;
 	char				*patch_file_name;
 	char				*settings_file_name;
 	const struct firmware		*fw_file;
@@ -1100,7 +1106,7 @@ static void send_patch_file(void)
 	/* Retrieve the settings file */
 	err = request_firmware(&(cg2900_info->fw_file),
 			       cg2900_info->settings_file_name,
-			       cg2900_info->chip_dev.dev);
+			       cg2900_info->dev);
 	if (err < 0) {
 		CG2900_ERR("Couldn't get settings file (%d)", err);
 		goto error_handling;
@@ -1141,7 +1147,7 @@ static void work_power_off_chip(struct work_struct *work)
 	 * connectivity controller
 	 */
 	pf_data = (struct cg2900_platform_data *)
-			cg2900_info->chip_dev.dev->platform_data;
+			cg2900_info->dev->parent->platform_data;
 	if (pf_data->get_power_switch_off_cmd)
 		skb = pf_data->get_power_switch_off_cmd(NULL);
 
@@ -1226,7 +1232,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 
 	/* Open patch info file. */
 	err = request_firmware(&patch_info, PATCH_INFO_FILE,
-			       cg2900_info->chip_dev.dev);
+			       cg2900_info->dev);
 	if (err) {
 		CG2900_ERR("Couldn't get patch info file (%d)", err);
 		goto error_handling;
@@ -1250,7 +1256,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	/* Open settings info file. */
 	err = request_firmware(&settings_info,
 			       FACTORY_SETTINGS_INFO_FILE,
-			       cg2900_info->chip_dev.dev);
+			       cg2900_info->dev);
 	if (err) {
 		CG2900_ERR("Couldn't get settings info file (%d)", err);
 		goto error_handling;
@@ -1282,7 +1288,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	/* OK. Now it is time to download the patches */
 	err = request_firmware(&(cg2900_info->fw_file),
 			       cg2900_info->patch_file_name,
-			       cg2900_info->chip_dev.dev);
+			       cg2900_info->dev);
 	if (err < 0) {
 		CG2900_ERR("Couldn't get patch file (%d)", err);
 		goto error_handling;
@@ -1473,6 +1479,8 @@ static bool handle_vs_power_switch_off_cmd_complete(u8 *data)
 	if (CLOSING_POWER_SWITCH_OFF != cg2900_info->closing_state)
 		return false;
 
+	CG2900_INFO("handle_vs_power_switch_off_cmd_complete");
+
 	/*
 	 * We were waiting for this but we don't need to do anything upon
 	 * reception except warn for error status
@@ -1495,11 +1503,78 @@ static bool handle_vs_power_switch_off_cmd_complete(u8 *data)
 static bool handle_vs_system_reset_cmd_complete(u8 *data)
 {
 	u8 status = data[0];
+	struct bt_vs_bt_enable_cmd cmd;
 
 	if (cg2900_info->boot_state != BOOT_ACTIVATE_PATCHES_AND_SETTINGS)
 		return false;
 
-	CG2900_INFO("SYS_CLK_OUT Disabled");
+	CG2900_INFO("handle_vs_system_reset_cmd_complete");
+
+	if (HCI_BT_ERROR_NO_ERROR == status) {
+		/*
+		 * We are now almost finished. Shut off BT Core. It will be
+		 * re-enabled by the Bluetooth driver when needed.
+		 */
+		SET_BOOT_STATE(BOOT_DISABLE_BT);
+		cmd.op_code = cpu_to_le16(CG2900_BT_OP_VS_BT_ENABLE);
+		cmd.plen = BT_PARAM_LEN(sizeof(cmd));
+		cmd.enable = CG2900_BT_DISABLE;
+		create_and_send_bt_cmd(&cmd, sizeof(cmd));
+	} else {
+		CG2900_ERR("Received Reset complete event with status 0x%X",
+			   status);
+		SET_BOOT_STATE(BOOT_FAILED);
+		cg2900_chip_startup_finished(-EIO);
+	}
+
+	return true;
+}
+
+/**
+ * handle_vs_bt_enable_cmd_status() - Handles HCI VS BtEnable Command Status event.
+ * @status:	Returned status of BtEnable command.
+ *
+ * Returns:
+ *   true,  if packet was handled internally,
+ *   false, otherwise.
+ */
+static bool handle_vs_bt_enable_cmd_status(u8 status)
+{
+	if (cg2900_info->boot_state != BOOT_DISABLE_BT)
+		return false;
+
+	CG2900_INFO("handle_vs_bt_enable_cmd_status");
+
+	/*
+	 * Only do something if there is an error. Otherwise we will wait for
+	 * CmdComplete.
+	 */
+	if (HCI_BT_ERROR_NO_ERROR != status) {
+		CG2900_ERR("Received BtEnable status event with status 0x%X",
+			   status);
+		SET_BOOT_STATE(BOOT_FAILED);
+		cg2900_chip_startup_finished(-EIO);
+	}
+
+	return true;
+}
+
+/**
+ * handle_vs_bt_enable_cmd_complete() - Handle HCI VS BtEnable Command Complete event.
+ * @data:	Pointer to received HCI data packet.
+ *
+ * Returns:
+ *   true,  if packet was handled internally,
+ *   false, otherwise.
+ */
+static bool handle_vs_bt_enable_cmd_complete(u8 *data)
+{
+	u8 status = data[0];
+
+	if (cg2900_info->boot_state != BOOT_DISABLE_BT)
+		return false;
+
+	CG2900_INFO("handle_vs_bt_enable_cmd_complete");
 
 	if (HCI_BT_ERROR_NO_ERROR == status) {
 		/*
@@ -1509,7 +1584,7 @@ static bool handle_vs_system_reset_cmd_complete(u8 *data)
 		SET_BOOT_STATE(BOOT_READY);
 		cg2900_chip_startup_finished(0);
 	} else {
-		CG2900_ERR("Received Reset complete event with status 0x%X",
+		CG2900_ERR("Received BtEnable complete event with status 0x%X",
 			   status);
 		SET_BOOT_STATE(BOOT_FAILED);
 		cg2900_chip_startup_finished(-EIO);
@@ -1539,12 +1614,12 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 	u16 op_code;
 
 	evt = (struct hci_event_hdr *)data;
+	data += sizeof(*evt);
 
 	/* First check the event code. */
 	if (HCI_EV_CMD_COMPLETE == evt->evt) {
 		struct hci_ev_cmd_complete *cmd_complete;
 
-		data += sizeof(*evt);
 		cmd_complete = (struct hci_ev_cmd_complete *)data;
 
 		op_code = le16_to_cpu(cmd_complete->opcode);
@@ -1566,10 +1641,11 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 				handle_vs_power_switch_off_cmd_complete(data);
 		else if (op_code == CG2900_BT_OP_VS_SYSTEM_RESET)
 			pkt_handled = handle_vs_system_reset_cmd_complete(data);
+		else if (op_code == CG2900_BT_OP_VS_BT_ENABLE)
+			pkt_handled = handle_vs_bt_enable_cmd_complete(data);
 	} else if (HCI_EV_CMD_STATUS == evt->evt) {
 		struct hci_ev_cmd_status *cmd_status;
 
-		data += sizeof(*evt);
 		cmd_status = (struct hci_ev_cmd_status *)data;
 
 		op_code = le16_to_cpu(cmd_status->opcode);
@@ -1579,6 +1655,9 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 
 		if (op_code == CG2900_BT_OP_VS_WRITE_FILE_BLOCK)
 			pkt_handled = handle_vs_write_file_block_cmd_status
+				(cmd_status->status);
+		else if (op_code == CG2900_BT_OP_VS_BT_ENABLE)
+			pkt_handled = handle_vs_bt_enable_cmd_status
 				(cmd_status->status);
 	} else
 		return false;
@@ -2013,21 +2092,22 @@ static struct cg2900_id_callbacks chip_support_callbacks = {
 };
 
 /**
- * cg2900_init() - Initialize module.
+ * cg2900_chip_probe() - Initialize CG2900 chip handler resources.
+ * @pdev:	Platform device.
  *
- * The cg2900_init() function initializes the CG2900 driver,
- * then registers to the CG2900 Core.
+ * This function initializes the CG2900 driver, then registers to
+ * the CG2900 Core.
  *
  * Returns:
  *   0 if success.
  *   -ENOMEM for failed alloc or structure creation.
  *   Error codes generated by cg2900_register_chip_driver.
  */
-static int __init cg2900_init(void)
+static int __init cg2900_chip_probe(struct platform_device *pdev)
 {
 	int err = 0;
 
-	CG2900_INFO("cg2900_init");
+	CG2900_INFO("cg2900_chip_probe");
 
 	cg2900_info = kzalloc(sizeof(*cg2900_info), GFP_ATOMIC);
 	if (!cg2900_info) {
@@ -2052,6 +2132,7 @@ static int __init cg2900_init(void)
 	cg2900_info->audio_fm_cmd_id = CG2900_FM_CMD_NONE;
 	cg2900_info->hci_fm_cmd_func = CG2900_FM_CMD_PARAM_NONE;
 	cg2900_info->fm_radio_mode = FM_RADIO_MODE_IDLE;
+	cg2900_info->dev = &(pdev->dev);
 
 	cg2900_info->wq = create_singlethread_workqueue(WQ_NAME);
 	if (!cg2900_info->wq) {
@@ -2097,24 +2178,60 @@ finished:
 }
 
 /**
- * cg2900_exit() - Remove module.
+ * cg2900_chip_remove() - Release CG2900 chip handler resources.
+ * @pdev:	Platform device.
+ *
+ * Returns:
+ *   0 if success (always success).
  */
-static void __exit cg2900_exit(void)
+static int __exit cg2900_chip_remove(struct platform_device *pdev)
 {
-	CG2900_INFO("cg2900_exit");
+	CG2900_INFO("cg2900_chip_remove");
 
 	if (!cg2900_info)
-		return;
+		return 0;
 
 	kfree(cg2900_info->settings_file_name);
 	kfree(cg2900_info->patch_file_name);
 	destroy_workqueue(cg2900_info->wq);
 	kfree(cg2900_info);
 	cg2900_info = NULL;
+	return 0;
 }
 
-module_init(cg2900_init);
-module_exit(cg2900_exit);
+static struct platform_driver cg2900_chip_driver = {
+	.driver = {
+		.name	= "cg2900-chip",
+		.owner	= THIS_MODULE,
+	},
+	.probe	= cg2900_chip_probe,
+	.remove	= __exit_p(cg2900_chip_remove),
+};
+
+/**
+ * cg2900_chip_init() - Initialize module.
+ *
+ * Registers platform driver.
+ */
+static int __init cg2900_chip_init(void)
+{
+	CG2900_INFO("cg2900_chip_init");
+	return platform_driver_register(&cg2900_chip_driver);
+}
+
+/**
+ * cg2900_chip_exit() - Remove module.
+ *
+ * Unregisters platform driver.
+ */
+static void __exit cg2900_chip_exit(void)
+{
+	CG2900_INFO("cg2900_chip_exit");
+	platform_driver_unregister(&cg2900_chip_driver);
+}
+
+module_init(cg2900_chip_init);
+module_exit(cg2900_chip_exit);
 
 MODULE_AUTHOR("Par-Gunnar Hjalmdahl ST-Ericsson");
 MODULE_LICENSE("GPL v2");

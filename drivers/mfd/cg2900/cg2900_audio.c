@@ -18,6 +18,7 @@
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/skbuff.h>
@@ -1951,10 +1952,18 @@ finished_unlock_mutex:
 	return err;
 }
 
-/*
- *	External methods
+/**
+ * cg2900_audio_open() - Opens a session to the ST-Ericsson CG2900 Audio control interface.
+ * @session:	[out] Address where to store the session identifier.
+ *		Allocated by caller, must not be NULL.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter.
+ *   -ENOMEM upon allocation failure.
+ *   -EMFILE if no more user session could be opened.
+ *   -EIO upon failure to register to CG2900.
  */
-
 int cg2900_audio_open(unsigned int *session)
 {
 	int err = 0;
@@ -2078,6 +2087,17 @@ finished:
 }
 EXPORT_SYMBOL(cg2900_audio_open);
 
+/**
+ * cg2900_audio_close() - Closes an opened session to the ST-Ericsson CG2900 audio control interface.
+ * @session:	[in_out] Pointer to session identifier to close.
+ *		Will be 0 after this call.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter.
+ *   -EIO if driver has not been opened.
+ *   -EACCES if session has not opened.
+ */
 int cg2900_audio_close(unsigned int *session)
 {
 	int err = 0;
@@ -2128,6 +2148,24 @@ err_unlock_mutex:
 }
 EXPORT_SYMBOL(cg2900_audio_close);
 
+/**
+ * cg2900_audio_set_dai_config() -  Sets the Digital Audio Interface configuration.
+ * @session:	Session identifier this call is related to.
+ * @config:	Pointer to the configuration to set.
+ *		Allocated by caller, must not be NULL.
+ *
+ * Sets the Digital Audio Interface (DAI) configuration. The DAI is the external
+ * interface between the combo chip and the platform.
+ * For example the PCM or I2S interface.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter.
+ *   -EIO if driver has not been opened.
+ *   -ENOMEM upon allocation failure.
+ *   -EACCES if trying to set unsupported configuration.
+ *   Errors from @receive_bt_cmd_complete.
+ */
 int cg2900_audio_set_dai_config(unsigned int session,
 				struct cg2900_dai_config *config)
 {
@@ -2172,6 +2210,25 @@ int cg2900_audio_set_dai_config(unsigned int session,
 }
 EXPORT_SYMBOL(cg2900_audio_set_dai_config);
 
+/**
+ * cg2900_audio_get_dai_config() - Gets the current Digital Audio Interface configuration.
+ * @session:	Session identifier this call is related to.
+ * @config:	[out] Pointer to the configuration to get.
+ *		Allocated by caller, must not be NULL.
+ *
+ * Gets the current Digital Audio Interface configuration. Currently this method
+ * can only be called after some one has called
+ * cg2900_audio_set_dai_config(), there is today no way of getting
+ * the static settings file parameters from this method.
+ * Note that the @port parameter within @config must be set when calling this
+ * function so that the ST-Ericsson CG2900 Audio driver will know which
+ * configuration to return.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter.
+ *   -EIO if driver has not been opened or configuration has not been set.
+ */
 int cg2900_audio_get_dai_config(unsigned int session,
 				struct cg2900_dai_config *config)
 {
@@ -2231,6 +2288,25 @@ int cg2900_audio_get_dai_config(unsigned int session,
 }
 EXPORT_SYMBOL(cg2900_audio_get_dai_config);
 
+/**
+ * cg2900_audio_config_endpoint() - Configures one endpoint in the combo chip's audio system.
+ * @session:	Session identifier this call is related to.
+ * @config:	Pointer to the endpoint's configuration structure.
+ *
+ * Configures one endpoint in the combo chip's audio system.
+ * Supported @endpoint_id values are:
+ *  * ENDPOINT_BT_SCO_INOUT
+ *  * ENDPOINT_BT_A2DP_SRC
+ *  * ENDPOINT_FM_RX
+ *  * ENDPOINT_FM_TX
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter.
+ *   -EIO if driver has not been opened.
+ *   -EACCES if supplied cg2900_dai_config struct contains not supported
+ *   endpoint_id.
+ */
 int cg2900_audio_config_endpoint(unsigned int session,
 				 struct cg2900_endpoint_config *config)
 {
@@ -2290,6 +2366,34 @@ static bool is_dai_port(enum cg2900_audio_endpoint_id ep)
 	return (ep == ENDPOINT_PORT_0_I2S) || (ep == ENDPOINT_PORT_1_I2S_PCM);
 }
 
+/**
+ * cg2900_audio_start_stream() - Connects two endpoints and starts the audio stream.
+ * @session:		Session identifier this call is related to.
+ * @ep_1:		One of the endpoints, no relation to direction or role.
+ * @ep_2:		The other endpoint, no relation to direction or role.
+ * @stream_handle:	Pointer where to store the stream handle.
+ *			Allocated by caller, must not be NULL.
+ *
+ * Connects two endpoints and starts the audio stream.
+ * Note that the endpoints need to be configured before the stream is started;
+ * DAI endpoints, such as ENDPOINT_PORT_0_I2S, are
+ * configured through @cg2900_audio_set_dai_config() while other
+ * endpoints are configured through @cg2900_audio_config_endpoint().
+ *
+ * Supported @endpoint_id values are:
+ *  * ENDPOINT_PORT_0_I2S
+ *  * ENDPOINT_PORT_1_I2S_PCM
+ *  * ENDPOINT_BT_SCO_INOUT
+ *  * ENDPOINT_FM_RX
+ *  * ENDPOINT_FM_TX
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter or unsupported configuration.
+ *   -EIO if driver has not been opened.
+ *   Errors from @conn_start_i2s_to_fm_rx, @conn_start_i2s_to_fm_tx, and
+ *   @conn_start_pcm_to_sco.
+ */
 int cg2900_audio_start_stream(unsigned int session,
 			      enum cg2900_audio_endpoint_id ep_1,
 			      enum cg2900_audio_endpoint_id ep_2,
@@ -2333,6 +2437,16 @@ int cg2900_audio_start_stream(unsigned int session,
 }
 EXPORT_SYMBOL(cg2900_audio_start_stream);
 
+/**
+ * cg2900_audio_stop_stream() - Stops a stream and disconnects the endpoints.
+ * @session:		Session identifier this call is related to.
+ * @stream_handle:	Handle to the stream to stop.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL upon bad input parameter.
+ *   -EIO if driver has not been opened.
+ */
 int cg2900_audio_stop_stream(unsigned int session, unsigned int stream_handle)
 {
 	struct audio_user *audio_user;
@@ -2351,10 +2465,6 @@ int cg2900_audio_stop_stream(unsigned int session, unsigned int stream_handle)
 	return conn_stop_stream(audio_user, stream_handle);
 }
 EXPORT_SYMBOL(cg2900_audio_stop_stream);
-
-/*
- *	Character devices for userspace module test
- */
 
 /**
  * audio_dev_open() - Open char device.
@@ -2771,7 +2881,8 @@ static const struct file_operations char_dev_fops = {
  */
 
 /**
- * cg2900_audio_init() - Initialize module.
+ * cg2900_audio_probe() - Initialize CG2900 audio resources.
+ * @pdev:	Platform device.
  *
  * Initialize the module and register misc device.
  *
@@ -2781,11 +2892,11 @@ static const struct file_operations char_dev_fops = {
  *   -EEXIST if device has already been started.
  *   Error codes from misc_register.
  */
-static int __init cg2900_audio_init(void)
+static int __init cg2900_audio_probe(struct platform_device *pdev)
 {
 	int err;
 
-	CG2900_INFO("cg2900_audio_init");
+	CG2900_INFO("cg2900_audio_probe");
 
 	if (audio_info) {
 		CG2900_ERR("ST-Ericsson CG2900 Audio driver already initiated");
@@ -2816,7 +2927,7 @@ static int __init cg2900_audio_init(void)
 	audio_info->dev.minor = MISC_DYNAMIC_MINOR;
 	audio_info->dev.name = DEVICE_NAME;
 	audio_info->dev.fops = &char_dev_fops;
-	audio_info->dev.parent = NULL;
+	audio_info->dev.parent = &(pdev->dev);
 
 	err = misc_register(&(audio_info->dev));
 	if (err) {
@@ -2837,18 +2948,23 @@ error_handling:
 }
 
 /**
- * cg2900_audio_exit() - Remove module.
+ * cg2900_audio_remove() - Release CG2900 audio resources.
+ * @pdev:	Platform device.
  *
  * Remove misc device and free resources.
+ *
+ * Returns:
+ *   0 if success.
+ *   Error codes from misc_deregister.
  */
-static void __exit cg2900_audio_exit(void)
+static int __exit cg2900_audio_remove(struct platform_device *pdev)
 {
 	int err;
 
-	CG2900_INFO("cg2900_audio_exit");
+	CG2900_INFO("cg2900_audio_remove");
 
 	if (!audio_info)
-		return;
+		return 0;
 
 	err = misc_deregister(&audio_info->dev);
 	if (err)
@@ -2867,6 +2983,38 @@ static void __exit cg2900_audio_exit(void)
 
 	kfree(audio_info);
 	audio_info = NULL;
+	return err;
+}
+
+static struct platform_driver cg2900_audio_driver = {
+	.driver = {
+		.name	= "cg2900-audio",
+		.owner	= THIS_MODULE,
+	},
+	.probe	= cg2900_audio_probe,
+	.remove	= __exit_p(cg2900_audio_remove),
+};
+
+/**
+ * cg2900_audio_init() - Initialize module.
+ *
+ * Registers platform driver.
+ */
+static int __init cg2900_audio_init(void)
+{
+	CG2900_INFO("cg2900_audio_init");
+	return platform_driver_register(&cg2900_audio_driver);
+}
+
+/**
+ * cg2900_audio_exit() - Remove module.
+ *
+ * Unregisters platform driver.
+ */
+static void __exit cg2900_audio_exit(void)
+{
+	CG2900_INFO("cg2900_audio_exit");
+	platform_driver_unregister(&cg2900_audio_driver);
 }
 
 module_init(cg2900_audio_init);

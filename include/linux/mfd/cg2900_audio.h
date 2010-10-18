@@ -442,145 +442,18 @@ struct cg2900_endpoint_config {
 	union cg2900_endpoint_config_union	config;
 };
 
-/*
- * ST-Ericsson CG2900 audio control driver interfaces methods
- */
-
-/**
- * cg2900_audio_open() - Opens a session to the ST-Ericsson CG2900 Audio control interface.
- * @session:	[out] Address where to store the session identifier.
- *		Allocated by caller, must not be NULL.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter.
- *   -ENOMEM upon allocation failure.
- *   -EMFILE if no more user session could be opened.
- *   -EIO upon failure to register to CG2900.
- */
 int cg2900_audio_open(unsigned int *session);
-
-/**
- * cg2900_audio_close() - Closes an opened session to the ST-Ericsson CG2900 audio control interface.
- * @session:	[in_out] Pointer to session identifier to close.
- *		Will be 0 after this call.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter.
- *   -EIO if driver has not been opened.
- *   -EACCES if session has not opened.
- */
 int cg2900_audio_close(unsigned int *session);
-
-/**
- * cg2900_audio_set_dai_config() -  Sets the Digital Audio Interface configuration.
- * @session:	Session identifier this call is related to.
- * @config:	Pointer to the configuration to set.
- *		Allocated by caller, must not be NULL.
- *
- * Sets the Digital Audio Interface (DAI) configuration. The DAI is the external
- * interface between the combo chip and the platform.
- * For example the PCM or I2S interface.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter.
- *   -EIO if driver has not been opened.
- *   -ENOMEM upon allocation failure.
- *   -EACCES if trying to set unsupported configuration.
- *   Errors from @receive_bt_cmd_complete.
- */
 int cg2900_audio_set_dai_config(unsigned int session,
 				struct cg2900_dai_config *config);
-
-/**
- * cg2900_audio_get_dai_config() - Gets the current Digital Audio Interface configuration.
- * @session:	Session identifier this call is related to.
- * @config:	[out] Pointer to the configuration to get.
- *		Allocated by caller, must not be NULL.
- *
- * Gets the current Digital Audio Interface configuration. Currently this method
- * can only be called after some one has called
- * cg2900_audio_set_dai_config(), there is today no way of getting
- * the static settings file parameters from this method.
- * Note that the @port parameter within @config must be set when calling this
- * function so that the ST-Ericsson CG2900 Audio driver will know which
- * configuration to return.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter.
- *   -EIO if driver has not been opened or configuration has not been set.
- */
 int cg2900_audio_get_dai_config(unsigned int session,
 				struct cg2900_dai_config *config);
-
-/**
- * cg2900_audio_config_endpoint() - Configures one endpoint in the combo chip's audio system.
- * @session:	Session identifier this call is related to.
- * @config:	Pointer to the endpoint's configuration structure.
- *
- * Configures one endpoint in the combo chip's audio system.
- * Supported @endpoint_id values are:
- *  * ENDPOINT_BT_SCO_INOUT
- *  * ENDPOINT_BT_A2DP_SRC
- *  * ENDPOINT_FM_RX
- *  * ENDPOINT_FM_TX
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter.
- *   -EIO if driver has not been opened.
- *   -EACCES if supplied cg2900_dai_config struct contains not supported
- *   endpoint_id.
- */
 int cg2900_audio_config_endpoint(unsigned int session,
 				 struct cg2900_endpoint_config *config);
-
-/**
- * cg2900_audio_start_stream() - Connects two endpoints and starts the audio stream.
- * @session:		Session identifier this call is related to.
- * @ep_1:		One of the endpoints, no relation to direction or role.
- * @ep_2:		The other endpoint, no relation to direction or role.
- * @stream_handle:	Pointer where to store the stream handle.
- *			Allocated by caller, must not be NULL.
- *
- * Connects two endpoints and starts the audio stream.
- * Note that the endpoints need to be configured before the stream is started;
- * DAI endpoints, such as ENDPOINT_PORT_0_I2S, are
- * configured through @cg2900_audio_set_dai_config() while other
- * endpoints are configured through @cg2900_audio_config_endpoint().
- *
- * Supported @endpoint_id values are:
- *  * ENDPOINT_PORT_0_I2S
- *  * ENDPOINT_PORT_1_I2S_PCM
- *  * ENDPOINT_BT_SCO_INOUT
- *  * ENDPOINT_FM_RX
- *  * ENDPOINT_FM_TX
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter or unsupported configuration.
- *   -EIO if driver has not been opened.
- *   Errors from @conn_start_i2s_to_fm_rx, @conn_start_i2s_to_fm_tx, and
- *   @conn_start_pcm_to_sco.
- */
 int cg2900_audio_start_stream(unsigned int session,
 			      enum cg2900_audio_endpoint_id ep_1,
 			      enum cg2900_audio_endpoint_id ep_2,
 			      unsigned int *stream_handle);
-
-/**
- * cg2900_audio_stop_stream() - Stops a stream and disconnects the endpoints.
- * @session:		Session identifier this call is related to.
- * @stream_handle:	Handle to the stream to stop.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL upon bad input parameter.
- *   -EIO if driver has not been opened.
- */
 int cg2900_audio_stop_stream(unsigned int session,
 			     unsigned int stream_handle);
 

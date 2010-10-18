@@ -118,7 +118,7 @@
       If building as LKM, 2 files will be generated:
       <itemizedlist>
         <listitem><para>cg2900.ko which contains the main driver</para></listitem>
-        <listitem><para>cg2900_hci.ko which contains the registration and mapping towards the BlueZ Bluetooth stack</para></listitem>
+        <listitem><para>btcg2900.ko which contains the registration and mapping towards the BlueZ Bluetooth stack</para></listitem>
       </itemizedlist>
 
       <!-- TODO: Provide a basic tutorial, outlining how
@@ -1303,13 +1303,11 @@
         "Not Applicable" -->
   <section id="cg2900.h">
     <title>cg2900.h</title>
-!Einclude/linux/mfd/cg2900.h
-!Iinclude/linux/mfd/cg2900.h
+!Edrivers/mfd/cg2900/cg2900_core.c
   </section>
   <section id="cg2900_audio.h">
     <title>cg2900_audio.h</title>
-!Einclude/linux/mfd/cg2900_audio.h
-!Iinclude/linux/mfd/cg2900_audio.h
+!Edrivers/mfd/cg2900/cg2900_audio.c
   </section>
 
 </chapter>
@@ -1329,39 +1327,6 @@
   <section id="cg2900_core.h">
     <title>cg2900_core.h</title>
 !Edrivers/mfd/cg2900/cg2900_core.h
-!Idrivers/mfd/cg2900/cg2900_core.h
-  </section>
-  <section id="cg2900_core.c">
-    <title>cg2900_core.c</title>
-!Idrivers/mfd/cg2900/cg2900_core.c
-  </section>
-  <section id="cg2900_uart.c">
-    <title>cg2900_uart.c</title>
-!Idrivers/mfd/cg2900/cg2900_uart.c
-  </section>
-  <section id="cg2900_chip.c">
-    <title>cg2900_chip.c</title>
-!Idrivers/mfd/cg2900/cg2900_chip.c
-  </section>
-  <section id="stlc2690_chip.c">
-    <title>stlc2690_chip.c</title>
-!Idrivers/mfd/cg2900/stlc2690_chip.c
-  </section>
-  <section id="cg2900_char_devices.h">
-    <title>cg2900_char_devices.h</title>
-!Idrivers/mfd/cg2900/cg2900_char_devices.h
-  </section>
-  <section id="cg2900_char_devices.c">
-    <title>cg2900_char_devices.c</title>
-!Idrivers/mfd/cg2900/cg2900_char_devices.c
-  </section>
-  <section id="cg2900_hci.c">
-    <title>cg2900_hci.c</title>
-!Idrivers/bluetooth/cg2900_hci.c
-  </section>
-  <section id="cg2900_audio.c">
-    <title>cg2900_audio.c</title>
-!Idrivers/mfd/cg2900/cg2900_audio.c
   </section>
 </chapter>
 </book>

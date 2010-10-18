@@ -139,6 +139,7 @@ struct cg2900_rev_data {
  * @get_power_switch_off_cmd:	Callback called to retrieve
  *				HCI VS_Power_Switch_Off command (command
  *				HCI requires platform specific GPIO data).
+ * @bus:		Transport used, see @include/net/bluetooth/hci.h.
  * @cts_irq:		Interrupt for the UART CTS pin.
  * @enable_uart:	Callback called when switching from UART GPIO to
  *			UART HW.
@@ -158,6 +159,8 @@ struct cg2900_platform_data {
 				 u16 manufacturer);
 	struct sk_buff* (*get_power_switch_off_cmd)(u16 *op_code);
 
+	__u8 bus;
+
 	struct {
 		int cts_irq;
 		int (*enable_uart)(void);
@@ -166,76 +169,19 @@ struct cg2900_platform_data {
 };
 
 /**
- * cg2900_register_user() - Register CG2900 user.
- * @name:	Name of HCI H:4 channel to register to.
- * @cb:		Callback structure to use for the H:4 channel.
- *
- * Returns:
- *   Pointer to CG2900 device structure if successful.
- *   NULL upon failure.
+ * struct cg2900_bt_platform_data - Contains platform data for CG2900 Bluetooth.
+ * @bus:	Transport used, see @include/net/bluetooth/hci.h.
  */
+struct cg2900_bt_platform_data {
+	__u8 bus;
+};
+
 extern struct cg2900_device *cg2900_register_user(char *name,
 						  struct cg2900_callbacks *cb);
-
-/**
- * cg2900_deregister_user() - Remove registration of CG2900 user.
- * @dev:	CG2900 device.
- */
 extern void cg2900_deregister_user(struct cg2900_device *dev);
-
-/**
- * cg2900_reset() - Reset the CG2900 controller.
- * @dev:	CG2900 device.
- *
- * Returns:
- *   0 if there is no error.
- *   -EACCES if driver has not been initialized.
- */
 extern int cg2900_reset(struct cg2900_device *dev);
-
-/**
- * cg2900_alloc_skb() - Alloc an sk_buff structure for CG2900 handling.
- * @size:	Size in number of octets.
- * @priority:	Allocation priority, e.g. GFP_KERNEL.
- *
- * Returns:
- *   Pointer to sk_buff buffer structure if successful.
- *   NULL upon allocation failure.
- */
 extern struct sk_buff *cg2900_alloc_skb(unsigned int size, gfp_t priority);
-
-/**
- * cg2900_write() - Send data to the connectivity controller.
- * @dev: CG2900 device.
- * @skb: Data packet.
- *
- * The cg2900_write() function sends data to the connectivity controller.
- * If the return value is 0 the skb will be freed by the driver,
- * otherwise it won't be freed.
- *
- * Returns:
- *   0 if there is no error.
- *   -EACCES if driver has not been initialized or trying to write while driver
- *   is not active.
- *   -EINVAL if NULL pointer was supplied.
- *   -EPERM if operation is not permitted, e.g. trying to write to a channel
- *   that doesn't handle write operations.
- *   Error codes returned from core_enable_hci_logger.
- */
 extern int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb);
-
-/**
- * cg2900_get_local_revision() - Read revision of the connected controller.
- * @rev_data:	Revision data structure to fill. Must be allocated by caller.
- *
- * The cg2900_get_local_revision() function returns the revision data of the
- * local controller if available. If data is not available, e.g. because the
- * controller has not yet been started this function will return false.
- *
- * Returns:
- *   true if revision data is available.
- *   false if no revision data is available.
- */
 extern bool cg2900_get_local_revision(struct cg2900_rev_data *rev_data);
 
 #endif /* _CG2900_H_ */

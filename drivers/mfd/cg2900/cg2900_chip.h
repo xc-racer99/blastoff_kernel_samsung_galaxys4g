@@ -94,6 +94,17 @@ struct bt_vs_write_file_block_cmd {
 	__u8	data; /* Really a data array of variable size */
 } __attribute__((packed));
 
+#define CG2900_BT_DISABLE				0x00
+#define CG2900_BT_ENABLE				0x01
+
+/* BT VS BT Enable command */
+#define CG2900_BT_OP_VS_BT_ENABLE			0xFF10
+struct bt_vs_bt_enable_cmd {
+	__le16	op_code;
+	u8	plen;
+	u8	enable;
+} __attribute__((packed));
+
 /* Bluetooth Vendor Specific Opcodes */
 #define CG2900_BT_OP_VS_POWER_SWITCH_OFF		0xFD40
 #define CG2900_BT_OP_VS_SYSTEM_RESET			0xFF12

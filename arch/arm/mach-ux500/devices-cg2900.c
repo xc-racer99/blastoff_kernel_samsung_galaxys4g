@@ -25,6 +25,8 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/mfd/cg2900.h>
+#include <net/bluetooth/bluetooth.h>
+#include <net/bluetooth/hci.h>
 #include <plat/pincfg.h>
 
 #include "pins-db8500.h"
@@ -238,6 +240,8 @@ struct cg2900_platform_data cg2900_platform_data = {
 	.disable_chip = cg2900_disable_chip,
 	.set_hci_revision = cg2900_set_hci_revision,
 	.get_power_switch_off_cmd = cg2900_get_power_switch_off_cmd,
+
+	.bus = HCI_UART,
 
 #ifdef CONFIG_MFD_CG2900_UART
 	.uart = {
