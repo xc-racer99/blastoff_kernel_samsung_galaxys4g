@@ -392,18 +392,10 @@ static void fmd_reset_cb(
 			struct cg2900_device *dev
 			);
 
-
 /* structure declared in time.h */
 struct timespec time_spec;
 
-/**
- * struct cg2900_fm_cb - Specifies callback structure for cg2900 user.
- *
- * @read_cb:  Callback function called when data is received from the
- * controller
- * @reset_cb: Callback function called when the controller has been reset
- * This type specifies callback structure for cg2900 user.
- */
+/* Callback structure for cg2900 user */
 static struct cg2900_callbacks cg2900_fm_cb = {
 	.read_cb = fmd_read_cb,
 	.reset_cb = fmd_reset_cb
