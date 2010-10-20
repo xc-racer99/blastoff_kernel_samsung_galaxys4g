@@ -919,7 +919,7 @@ int cg2900_fm_switch_off(void)
 
 	FM_INFO_REPORT("cg2900_fm_switch_off");
 
-	if (CG2900_FM_STATE_SWITCHED_ON != fm_state ||
+	if (CG2900_FM_STATE_SWITCHED_ON != fm_state &&
 		CG2900_FM_STATE_STAND_BY != fm_state) {
 		FM_ERR_REPORT("cg2900_fm_switch_off: "
 			"Invalid state of FM Driver = %d", fm_state);

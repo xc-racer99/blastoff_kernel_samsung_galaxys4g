@@ -646,8 +646,6 @@ static void fmd_process_interrupt(
 			/* Power Amplifier has been enabled/disabled */
 		case FMD_STATE_PA_LEVEL:
 			/* Power Amplifier Level has been changed. */
-		case FMD_STATE_GEN_POWERUP:
-			/* Gen Power Up Success confirmation received. */
 		case FMD_STATE_SELECT_REF_CLK:
 			/* Reference Clock has been selected. */
 		case FMD_STATE_SET_REF_CLK_PLL:
@@ -1245,6 +1243,7 @@ static int fmd_irq_thread(
 			}
 		}
 		fmd_state_info.interrupt_available_for_processing = false;
+		schedule_timeout_interruptible(msecs_to_jiffies(100));
 	}
 	FM_DEBUG_REPORT("fmd_irq_thread Exiting!!!");
 	return 0;
