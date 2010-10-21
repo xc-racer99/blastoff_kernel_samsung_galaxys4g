@@ -99,6 +99,7 @@ enum {
 #define HCISETLINKMODE	_IOW('H', 226, int)
 #define HCISETACLMTU	_IOW('H', 227, int)
 #define HCISETSCOMTU	_IOW('H', 228, int)
+#define HCISETCONNINFO	_IOW('H', 229, int)
 
 #define HCIINQUIRY	_IOR('H', 240, int)
 
@@ -226,6 +227,15 @@ enum {
 #define HCI_AT_DEDICATED_BONDING_MITM	0x03
 #define HCI_AT_GENERAL_BONDING		0x04
 #define HCI_AT_GENERAL_BONDING_MITM	0x05
+
+/* Link Key types */
+#define HCI_LK_COMBINATION			0x00
+#define HCI_LK_LOCAL_UNIT			0x01
+#define HCI_LK_REMOTE_UNIT			0x02
+#define HCI_LK_DEBUG_COMBINATION		0x03
+#define HCI_LK_UNAUTHENTICATED_COMBINATION	0x04
+#define HCI_LK_AUTHENTICATED_COMBINATION	0x05
+#define HCI_LK_CHANGEED_COMBINATION_KEY		0x06
 
 /* -----  HCI Commands ---- */
 #define HCI_OP_INQUIRY			0x0401
@@ -1028,9 +1038,16 @@ struct hci_conn_info_req {
 	struct   hci_conn_info conn_info[0];
 };
 
+struct hci_set_conn_info_req {
+	bdaddr_t bdaddr;
+	__u8     pin_len;
+	__u8	 key_type;
+};
+
 struct hci_auth_info_req {
 	bdaddr_t bdaddr;
 	__u8     type;
+	__u8     level;
 };
 
 struct hci_inquiry_req {

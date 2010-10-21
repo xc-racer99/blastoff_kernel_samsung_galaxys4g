@@ -2031,7 +2031,15 @@ static void rfcomm_security_cfm(struct hci_conn *conn, u8 status, u8 encrypt)
 			continue;
 
 		if (!status)
-			set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
+			if (d->sec_level != BT_SECURITY_HIGH)
+				set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
+			else
+				if ((conn->key_type == HCI_LK_AUTHENTICATED_COMBINATION)
+					|| (conn->key_type == HCI_LK_COMBINATION
+						&& conn->pin_len >= 16))
+					set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
+				else
+					set_bit(RFCOMM_AUTH_REJECT, &d->flags);
 		else
 			set_bit(RFCOMM_AUTH_REJECT, &d->flags);
 	}

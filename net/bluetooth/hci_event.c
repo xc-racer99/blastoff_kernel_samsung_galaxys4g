@@ -1523,6 +1523,10 @@ static inline void hci_link_key_notify_evt(struct hci_dev *hdev, struct sk_buff 
 	conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);
 	if (conn) {
 		hci_conn_hold(conn);
+		/* For Changed Combination Link Key the only link key has
+		 * been changed, not link key type. */
+		if (conn->key_type != HCI_LK_CHANGEED_COMBINATION_KEY)
+			conn->key_type = ev->key_type;
 		conn->disc_timeout = HCI_DISCONN_TIMEOUT;
 		hci_conn_put(conn);
 	}
