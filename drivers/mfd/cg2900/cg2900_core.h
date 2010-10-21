@@ -157,6 +157,7 @@ struct cg2900_trans_dev {
  * @close:		CG2900 Core does not need a transport.
  * @write:		CG2900 Core transmits to the chip.
  * @set_chip_power:	CG2900 Core enables or disables the chip.
+ * @chip_startup_finished:	CG2900 Chip startup finished notification.
  *
  * Note that some callbacks may be NULL. They must always be NULL checked before
  * calling.
@@ -166,6 +167,7 @@ struct cg2900_trans_callbacks {
 	int (*close)(struct cg2900_trans_dev *dev);
 	int (*write)(struct cg2900_trans_dev *dev, struct sk_buff *skb);
 	void (*set_chip_power)(bool chip_on);
+	void (*chip_startup_finished)(void);
 };
 
 /**
@@ -183,7 +185,6 @@ extern int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb);
  * cg2900_register_trans_driver() - Register a transport driver.
  * @cb:		Callbacks to call when chip is connected.
  * @data:	Arbitrary data used by the transport driver.
- * @dev:	Main device for the CG2900 driver (to be filled in).
  *
  * Returns:
  *   0 if there is no error.
@@ -191,7 +192,7 @@ extern int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb);
  *   -ENOMEM if allocation fails or work queue can't be created.
  */
 extern int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb,
-					void *data, struct device **dev);
+					void *data);
 
 /**
  * cg2900_deregister_trans_driver() - Deregister a transport driver.

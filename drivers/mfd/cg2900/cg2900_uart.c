@@ -25,6 +25,7 @@
 #include <linux/sched.h>
 #include <linux/skbuff.h>
 #include <linux/timer.h>
+#include <linux/regulator/consumer.h>
 #include <linux/tty.h>
 #include <linux/tty_ldisc.h>
 #include <linux/types.h>
@@ -140,11 +141,15 @@ enum uart_rx_state {
   * @CHIP_AWAKE:  Chip is awake.
   * @CHIP_FALLING_ASLEEP:  Chip is falling asleep.
   * @CHIP_ASLEEP: Chip is asleep.
+  * @CHIP_SUSPENDED: Chip in suspend state.
+  * @CHIP_POWERED_DOWN: Chip is off.
   */
 enum sleep_state {
 	CHIP_AWAKE,
 	CHIP_FALLING_ASLEEP,
-	CHIP_ASLEEP
+	CHIP_ASLEEP,
+	CHIP_SUSPENDED,
+	CHIP_POWERED_DOWN
 };
 
 /**
@@ -198,6 +203,9 @@ struct uart_work_struct{
  * @fd:			File object to device.
  * @sleep_state_lock:	Used to protect chip state.
  * @sleep_allowed:	Indicate if tty has functions needed for sleep mode.
+ * @regulator:		Regulator.
+ * @regulator_enabled:	True if regulator is enabled.
+ * @dev:		Pointer to CG2900 uart device.
  */
 struct uart_info {
 	struct workqueue_struct		*wq;
@@ -215,6 +223,8 @@ struct uart_info {
 	struct file			*fd;
 	struct mutex			sleep_state_lock;
 	bool				sleep_allowed;
+	struct regulator		*regulator;
+	bool				regulator_enabled;
 	struct device			*dev;
 };
 
@@ -356,10 +366,15 @@ static void handle_cts_irq(struct work_struct *work)
  */
 static irqreturn_t cts_interrupt(int irq, void *dev_id)
 {
+#ifdef CONFIG_PM
+	disable_irq_wake(irq);
+#endif
 	disable_irq_nosync(irq);
 
-	/* Create work and leave IRQ context. */
-	(void)create_work_item(uart_info->wq, handle_cts_irq, NULL);
+	/* If chip is suspended, resume callback will be called. */
+	if (CHIP_SUSPENDED != uart_info->sleep_state)
+		/* Create work and leave IRQ context. */
+		(void)create_work_item(uart_info->wq, handle_cts_irq, NULL);
 
 	return IRQ_HANDLED;
 }
@@ -376,7 +391,7 @@ static int set_cts_irq(void)
 	int err;
 	struct cg2900_platform_data *pf_data;
 
-	pf_data = (struct cg2900_platform_data *)uart_info->dev->platform_data;
+	pf_data = dev_get_platdata(uart_info->dev->parent);
 
 	/* First disable the UART so we can use IRQ on the GPIOs */
 	if (pf_data->uart.disable_uart) {
@@ -398,6 +413,9 @@ static int set_cts_irq(void)
 		goto error;
 	}
 
+#ifdef CONFIG_PM
+	enable_irq_wake(pf_data->uart.cts_irq);
+#endif
 	return 0;
 
 error:
@@ -414,7 +432,7 @@ static void unset_cts_irq(void)
 	int err = 0;
 	struct cg2900_platform_data *pf_data;
 
-	pf_data = (struct cg2900_platform_data *)uart_info->dev->platform_data;
+	pf_data = dev_get_platdata(uart_info->dev->parent);
 
 	/* Free CTS interrupt and restore UART settings. */
 	free_irq(pf_data->uart.cts_irq, NULL);
@@ -437,7 +455,8 @@ static void update_timer(void)
 	unsigned long timeout_jiffies = cg2900_get_sleep_timeout();
 	struct tty_struct *tty;
 
-	if (!timeout_jiffies || !uart_info->fd || !uart_info->sleep_allowed)
+	if ((!timeout_jiffies || !uart_info->fd || !uart_info->sleep_allowed)
+		&& (uart_info->sleep_state != CHIP_SUSPENDED))
 		return;
 
 	mutex_lock(&(uart_info->sleep_state_lock));
@@ -450,7 +469,8 @@ static void update_timer(void)
 
 	tty = uart_info->tty;
 
-	if (CHIP_ASLEEP == uart_info->sleep_state) {
+	if (CHIP_ASLEEP == uart_info->sleep_state ||
+		CHIP_SUSPENDED == uart_info->sleep_state) {
 		/* Disable IRQ only when it was enabled. */
 		unset_cts_irq();
 		(void)set_tty_baud(tty, uart_info->baud_rate);
@@ -525,9 +545,11 @@ static void sleep_timer_expired(unsigned long data)
 		SET_SLEEP_STATE(CHIP_FALLING_ASLEEP);
 		goto run_timer;
 
+	case CHIP_POWERED_DOWN:
+	case CHIP_SUSPENDED:
 	case CHIP_ASLEEP: /* Fallthrough. */
 	default:
-		CG2900_ERR("Chip already sleeps.");
+		CG2900_DBG("Chip sleeps, is suspended or powered down.");
 		break;
 	}
 
@@ -545,6 +567,118 @@ error:
 	uart_info->sleep_allowed = false;
 	uart_info->fd = NULL;
 	mutex_unlock(&(uart_info->sleep_state_lock));
+}
+
+#ifdef CONFIG_PM
+/**
+ * cg2900_uart_suspend() - Called by Linux PM to put the device in a low power mode.
+ * @pdev:	Pointer to platform device.
+ * @state:	New state.
+ *
+ * In UART case, CG2900 driver does nothing on suspend.
+ *
+ * Returns:
+ *   0 - Success.
+ */
+static int cg2900_uart_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	if (uart_info->sleep_state == CHIP_POWERED_DOWN)
+		return 0;
+
+	/* Timer is mostlikely running. Delete it. */
+	del_timer(&uart_info->timer);
+
+	if (CHIP_ASLEEP == uart_info->sleep_state)
+		goto finished;
+
+	if (CHIP_AWAKE == uart_info->sleep_state) {
+		uart_info->tty->ops->break_ctl(uart_info->tty, TTY_BREAK_ON);
+		SET_SLEEP_STATE(CHIP_FALLING_ASLEEP);
+		msleep(10);
+	}
+
+	if (CHIP_FALLING_ASLEEP == uart_info->sleep_state) {
+		int err;
+
+		/* Flow OFF. */
+		tty_throttle(uart_info->tty);
+		(void)set_tty_baud(uart_info->tty, ZERO_BAUD_RATE);
+
+		err = set_cts_irq();
+		if (err < 0) {
+			CG2900_ERR("Can not suspend");
+			SET_SLEEP_STATE(CHIP_AWAKE);
+			return err;
+		}
+	}
+
+finished:
+	SET_SLEEP_STATE(CHIP_SUSPENDED);
+	return 0;
+}
+
+/**
+ * cg2900_uart_resume() - Called to bring a device back from a low power state.
+ * @pdev:	Pointer to platform device.
+ *
+ * In UART case, CG2900 driver does nothing on resume.
+ *
+ * Returns:
+ *   0 - Success.
+ */
+static int cg2900_uart_resume(struct platform_device *pdev)
+{
+	if (uart_info->sleep_state != CHIP_POWERED_DOWN)
+		update_timer();
+	return 0;
+}
+#endif /* CONFIG_PM */
+
+/**
+ * cg2900_enable_regulator() - Enable regulator.
+ *
+ * Returns:
+ *   0 - Success.
+ *   Error from regulator_get, regulator_enable.
+ */
+static int cg2900_enable_regulator(void)
+{
+#ifdef CONFIG_REGULATOR
+	int err;
+
+	/* Get and enable regulator. */
+	uart_info->regulator = regulator_get(uart_info->dev->parent, "gbf_1v8");
+	if (IS_ERR(uart_info->regulator)) {
+		CG2900_ERR("Not able to find regulator.");
+		err = PTR_ERR(uart_info->regulator);
+	} else {
+		err = regulator_enable(uart_info->regulator);
+		if (err)
+			CG2900_ERR("Not able to enable regulator.");
+		else
+			uart_info->regulator_enabled = true;
+	}
+	return err;
+#else
+	return 0;
+#endif
+}
+
+/**
+ * cg2900_disable_regulator() - Disable regulator.
+ *
+ */
+static void cg2900_disable_regulator(void)
+{
+#ifdef CONFIG_REGULATOR
+	/* Disable and put regulator. */
+	if (uart_info->regulator && uart_info->regulator_enabled) {
+		regulator_disable(uart_info->regulator);
+		uart_info->regulator_enabled = false;
+	}
+	regulator_put(uart_info->regulator);
+	uart_info->regulator = NULL;
+#endif
 }
 
 /**
@@ -1004,21 +1138,28 @@ static void uart_set_chip_power(bool chip_on)
 		return;
 	}
 
-	pf_data = (struct cg2900_platform_data *)uart_info->dev->platform_data;
+	pf_data = dev_get_platdata(uart_info->dev->parent);
 
 	if (chip_on) {
-		if (pf_data->enable_chip)
+		if (cg2900_enable_regulator())
+			return;
+		if (pf_data->enable_chip) {
 			pf_data->enable_chip();
+			SET_SLEEP_STATE(CHIP_AWAKE);
+		}
 	} else {
-		if (pf_data->disable_chip)
+		if (pf_data->disable_chip) {
 			pf_data->disable_chip();
+			SET_SLEEP_STATE(CHIP_POWERED_DOWN);
+		}
+
+		cg2900_disable_regulator();
 		/*
 		 * Setting baud rate to 0 will tell UART driver to shut off its
 		 * clocks.
 		 */
 		uart_baudrate = ZERO_BAUD_RATE;
 	}
-
 	/*
 	 * Now we have to set the digital baseband UART
 	 * to default baudrate if chip is ON or to zero baudrate if
@@ -1027,6 +1168,14 @@ static void uart_set_chip_power(bool chip_on)
 	 (void)set_tty_baud(tty, uart_baudrate);
 }
 
+/**
+ * uart_chip_startup_finished() - CG2900 startup finished.
+ */
+static void uart_chip_startup_finished(void)
+{
+	/* Run the timer. */
+	update_timer();
+}
 /**
  * uart_close() - Close the CG2900 UART for data transfers.
  * @dev:	Transport device information.
@@ -1174,7 +1323,8 @@ static struct cg2900_trans_callbacks uart_cb = {
 	.open = uart_open,
 	.close = uart_close,
 	.write = uart_write,
-	.set_chip_power = uart_set_chip_power
+	.set_chip_power = uart_set_chip_power,
+	.chip_startup_finished  = uart_chip_startup_finished
 };
 
 /**
@@ -1373,7 +1523,7 @@ static int uart_tty_open(struct tty_struct *tty)
 	tty_driver_flush_buffer(tty);
 
 	/* Tell CG2900 Core that UART is connected */
-	err = cg2900_register_trans_driver(&uart_cb, NULL, &uart_info->dev);
+	err = cg2900_register_trans_driver(&uart_cb, NULL);
 	if (err)
 		CG2900_ERR("Could not register transport driver (%d)", err);
 
@@ -1579,7 +1729,7 @@ static int __init cg2900_uart_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	uart_info->sleep_state = CHIP_AWAKE;
+	uart_info->sleep_state = CHIP_POWERED_DOWN;
 	skb_queue_head_init(&uart_info->tx_queue);
 	mutex_init(&uart_info->tx_mutex);
 	spin_lock_init(&uart_info->rx_lock);
@@ -1603,6 +1753,8 @@ static int __init cg2900_uart_probe(struct platform_device *pdev)
 			   err);
 		goto error_handling_register;
 	}
+
+	uart_info->dev = &pdev->dev;
 
 	goto finished;
 
@@ -1653,6 +1805,10 @@ static struct platform_driver cg2900_uart_driver = {
 	},
 	.probe	= cg2900_uart_probe,
 	.remove	= __exit_p(cg2900_uart_remove),
+#ifdef CONFIG_PM
+	.suspend = cg2900_uart_suspend,
+	.resume = cg2900_uart_resume
+#endif
 };
 
 /**

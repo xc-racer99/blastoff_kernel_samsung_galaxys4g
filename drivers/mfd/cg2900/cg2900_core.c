@@ -276,7 +276,7 @@ EXPORT_SYMBOL(default_hci_revision);
 int default_sub_version = 0x0011;
 EXPORT_SYMBOL(default_sub_version);
 
-static int sleep_timeout_ms;
+static int sleep_timeout_ms = 100;
 
 /*
  * chip_handlers - List of the register handlers for different chips.
@@ -1138,7 +1138,7 @@ static int test_char_dev_open(struct inode *inode, struct file *filp)
 	};
 
 	CG2900_INFO("test_char_dev_open");
-	return cg2900_register_trans_driver(&cb, NULL, NULL);
+	return cg2900_register_trans_driver(&cb, NULL);
 }
 
 /**
@@ -1913,8 +1913,7 @@ int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb)
 }
 EXPORT_SYMBOL(cg2900_register_chip_driver);
 
-int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data,
-				 struct device **dev)
+int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
 {
 	int err;
 
@@ -1937,8 +1936,6 @@ int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data,
 	memcpy(&(core_info->trans_info->cb), cb, sizeof(*cb));
 	core_info->trans_info->dev.dev = core_info->dev;
 	core_info->trans_info->dev.user_data = data;
-	if (dev)
-		*dev = core_info->dev;
 
 	err = create_work_item(core_info->wq, work_hw_registered, NULL);
 	if (err) {
@@ -1981,6 +1978,10 @@ int cg2900_chip_startup_finished(int err)
 
 	wake_up_interruptible(&main_wait_queue);
 
+	if (!core_info->trans_info->cb.chip_startup_finished)
+		CG2900_ERR("chip_startup_finished callback not found.");
+	else
+		core_info->trans_info->cb.chip_startup_finished();
 	return 0;
 }
 EXPORT_SYMBOL(cg2900_chip_startup_finished);
