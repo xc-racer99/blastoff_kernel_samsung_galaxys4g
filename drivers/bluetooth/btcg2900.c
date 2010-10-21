@@ -831,7 +831,7 @@ static int register_bluetooth(void)
  *   -ENOMEM if allocation fails.
  *   Error codes from register_bluetooth.
  */
-static int __init btcg2900_probe(struct platform_device *pdev)
+static int __devinit btcg2900_probe(struct platform_device *pdev)
 {
 	int err;
 
@@ -861,7 +861,7 @@ static int __init btcg2900_probe(struct platform_device *pdev)
 /**
  * btcg2900_remove() - Remove module.
  */
-static int __exit btcg2900_remove(struct platform_device *pdev)
+static int __devexit btcg2900_remove(struct platform_device *pdev)
 {
 	int err = 0;
 
@@ -890,7 +890,7 @@ static struct platform_driver btcg2900_driver = {
 		.owner	= THIS_MODULE,
 	},
 	.probe	= btcg2900_probe,
-	.remove	= __exit_p(btcg2900_remove),
+	.remove	= __devexit_p(btcg2900_remove),
 };
 
 /**

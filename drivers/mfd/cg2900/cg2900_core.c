@@ -2193,7 +2193,7 @@ static struct mfd_cell cg2900_devs[] = {
  *   class_create, device_create, core_init, tty_register_ldisc,
  *   create_work_item.
  */
-static int __init cg2900_probe(struct platform_device *pdev)
+static int __devinit cg2900_probe(struct platform_device *pdev)
 {
 	int err;
 	struct cg2900_platform_data *pf_data;
@@ -2278,7 +2278,7 @@ error_handling:
  *   -ENOMEM if core_info does not exist.
  *   -EINVAL if platform data does not exist in the device.
  */
-static int __exit cg2900_remove(struct platform_device *pdev)
+static int __devexit cg2900_remove(struct platform_device *pdev)
 {
 	struct cg2900_platform_data *pf_data;
 
@@ -2330,7 +2330,7 @@ static struct platform_driver cg2900_driver = {
 		.owner	= THIS_MODULE,
 	},
 	.probe	= cg2900_probe,
-	.remove	= __exit_p(cg2900_remove),
+	.remove	= __devexit_p(cg2900_remove),
 };
 
 /**

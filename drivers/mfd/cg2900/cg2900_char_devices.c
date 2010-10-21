@@ -636,7 +636,7 @@ static void remove_dev(struct char_dev_user *dev_usr)
  *   -ENOMEM if allocation fails.
  *   -EACCES if device already have been initiated.
  */
-static int __init cg2900_char_probe(struct platform_device *pdev)
+static int __devinit cg2900_char_probe(struct platform_device *pdev)
 {
 	struct device *parent;
 
@@ -682,7 +682,7 @@ static int __init cg2900_char_probe(struct platform_device *pdev)
  * Returns:
  *   0 if success (always success).
  */
-static int __exit cg2900_char_remove(struct platform_device *pdev)
+static int __devexit cg2900_char_remove(struct platform_device *pdev)
 {
 	struct list_head *cursor, *next;
 	struct char_dev_user *tmp;
@@ -711,7 +711,7 @@ static struct platform_driver cg2900_char_driver = {
 		.owner	= THIS_MODULE,
 	},
 	.probe	= cg2900_char_probe,
-	.remove	= __exit_p(cg2900_char_remove),
+	.remove	= __devexit_p(cg2900_char_remove),
 };
 
 /**

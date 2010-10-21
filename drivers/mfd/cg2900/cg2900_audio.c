@@ -2892,7 +2892,7 @@ static const struct file_operations char_dev_fops = {
  *   -EEXIST if device has already been started.
  *   Error codes from misc_register.
  */
-static int __init cg2900_audio_probe(struct platform_device *pdev)
+static int __devinit cg2900_audio_probe(struct platform_device *pdev)
 {
 	int err;
 
@@ -2957,7 +2957,7 @@ error_handling:
  *   0 if success.
  *   Error codes from misc_deregister.
  */
-static int __exit cg2900_audio_remove(struct platform_device *pdev)
+static int __devexit cg2900_audio_remove(struct platform_device *pdev)
 {
 	int err;
 
@@ -2992,7 +2992,7 @@ static struct platform_driver cg2900_audio_driver = {
 		.owner	= THIS_MODULE,
 	},
 	.probe	= cg2900_audio_probe,
-	.remove	= __exit_p(cg2900_audio_remove),
+	.remove	= __devexit_p(cg2900_audio_remove),
 };
 
 /**
