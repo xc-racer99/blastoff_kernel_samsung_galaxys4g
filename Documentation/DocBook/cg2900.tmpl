@@ -115,9 +115,14 @@
       To enable the ST-Ericsson connectivity driver using KConfig go to <constant>Device Drivers -> Multifunction Device Drivers</constant>
       and enable the STE Connectivity Driver. If BlueZ shall be used as Bluetooth stack also enable the STE HCI Connectivity driver.
       Depending on choice the driver will either be included as LKM or built into the Kernel.
-      If building as LKM, 2 files will be generated:
+      If building as LKM, several files will be generated:
       <itemizedlist>
         <listitem><para>cg2900.ko which contains the main driver</para></listitem>
+        <listitem><para>cg2900_char_devices.ko which contains the character devices</para></listitem>
+        <listitem><para>cg2900_uart.ko which contains the UART driver</para></listitem>
+        <listitem><para>cg2900_chip.ko which contains the CG2900 chip specific driver</para></listitem>
+        <listitem><para>stlc2690_chip.ko which contains the STLC2690 chip specific driver</para></listitem>
+        <listitem><para>cg2900_audio.ko which contains the CG2900 audio driver</para></listitem>
         <listitem><para>btcg2900.ko which contains the registration and mapping towards the BlueZ Bluetooth stack</para></listitem>
       </itemizedlist>
 
@@ -537,16 +542,7 @@
    <title>Driver Configuration and Interaction</title>
    <!-- Do NOT change the chapter id or title! -->
    <para>
-     For debug purposes the define CG2900_DEBUG_LEVEL in the file cg2900_debug.h can be changed to set how much debug printouts
-     that shall be generated.
-     <itemizedlist>
-       <listitem><para>0 - No debug</para></listitem>
-       <listitem><para>1 - Error printouts</para></listitem>
-       <listitem><para>10 - Info printouts such as start of each function</para></listitem>
-       <listitem><para>20 - Debug printouts such as descriptions of operations</para></listitem>
-       <listitem><para>25 - Data printouts without content</para></listitem>
-       <listitem><para>30 - Data printouts with content</para></listitem>
-     </itemizedlist>
+     N/A
      <!-- TODO: Use this paragraph as an introduction to driver
            configuration and interaction. Describe the big picture. -->
      <!-- TODO: This chapter contains driver specific way to perform
@@ -672,6 +668,38 @@
        </varlistentry>
 
        <varlistentry>
+         <term>uart_debug</term>
+         <listitem>
+         <para>
+           <variablelist>
+             <varlistentry>
+               <term>Parameter type</term>
+               <listitem><synopsis><type>int</type></synopsis></listitem>
+             </varlistentry>
+             <varlistentry>
+               <term>Default value</term>
+               <listitem><para>0</para></listitem>
+             </varlistentry>
+             <varlistentry>
+               <term>Runtime readable/modifiable</term>
+               <listitem><para>Modifiable</para></listitem>
+             </varlistentry>
+             <varlistentry>
+               <term>Description</term>
+               <listitem>
+               <para>
+                 The parameter uart_debug in cg2900_uart.c enables or disables dumping of all
+                 data transmitted and received through the UART.
+                 0 means disabled and non-zero value means enabled.
+               </para>
+               </listitem>
+             </varlistentry>
+           </variablelist>
+         </para>
+         </listitem>
+       </varlistentry>
+
+       <varlistentry>
          <term>bd_address</term>
          <listitem>
          <para>
@@ -702,45 +730,6 @@
          </listitem>
        </varlistentry>
 
-       <varlistentry>
-         <term>debug_level</term>
-         <listitem>
-         <para>
-           <variablelist>
-             <varlistentry>
-               <term>Parameter type</term>
-               <listitem><synopsis><type>int</type></synopsis></listitem>
-             </varlistentry>
-             <varlistentry>
-               <term>Default value</term>
-               <listitem><para>1</para></listitem>
-             </varlistentry>
-             <varlistentry>
-               <term>Runtime readable/modifiable</term>
-               <listitem><para>Modifiable</para></listitem>
-             </varlistentry>
-             <varlistentry>
-               <term>Description</term>
-               <listitem>
-               <para>
-                 The parameter debug_level in cg2900_core.c defines the debug level that is currently used.
-                 The higher the debug level the more print-outs are received in the terminal window.
-                 The following values are supported:
-                 <itemizedlist>
-                   <listitem><para>0  = No debug</para></listitem>
-                   <listitem><para>1  = Error prints</para></listitem>
-                   <listitem><para>10 = General info, e.g. function entries</para></listitem>
-                   <listitem><para>20 = Debug info, e.g. steps in a functionality</para></listitem>
-                   <listitem><para>25 = Data info, i.e. prints when data is transferred</para></listitem>
-                   <listitem><para>30 = Data content, i.e. contents of the transferred data</para></listitem>
-                 </itemizedlist>
-               </para>
-               </listitem>
-             </varlistentry>
-           </variablelist>
-         </para>
-         </listitem>
-       </varlistentry>
        <varlistentry>
          <term>sleep_timeout_ms</term>
          <listitem>

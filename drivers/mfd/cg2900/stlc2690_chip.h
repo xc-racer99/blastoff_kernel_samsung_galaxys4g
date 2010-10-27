@@ -21,14 +21,14 @@
 struct bt_vs_store_in_fs_cmd {
 	__u8	user_id;
 	__u8	len;
-	__u8	data; /* Really a data array of variable size */
+	__u8	data[];
 } __attribute__((packed));
 
 /* BT VS Write File Block command */
 #define STLC2690_BT_OP_VS_WRITE_FILE_BLOCK		0xFC2E
 struct bt_vs_write_file_block_cmd {
 	__u8	id;
-	__u8	data; /* Really a data array of variable size */
+	__u8	data[];
 } __attribute__((packed));
 
 /* User ID for storing BD address in chip using Store_In_FS command */

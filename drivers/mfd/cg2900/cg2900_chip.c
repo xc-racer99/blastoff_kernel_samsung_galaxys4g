@@ -12,6 +12,8 @@
  *
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson CG2900 GPS/BT/FM controller.
  */
+#define NAME					"cg2900_chip"
+#define pr_fmt(fmt)				NAME ": " fmt "\n"
 
 #include <asm/byteorder.h>
 #include <linux/device.h>
@@ -39,8 +41,8 @@
 
 #include "cg2900_chip.h"
 #include "cg2900_core.h"
-#include "cg2900_debug.h"
-#include "hci_defines.h"
+
+#define MAIN_DEV				(cg2900_info->dev)
 
 /*
  * Max length in bytes for line buffer used to parse settings and patch file.
@@ -59,69 +61,55 @@
 /* Times in milliseconds */
 #define POWER_SW_OFF_WAIT			500
 
-/* State setting macros */
-#define SET_BOOT_STATE(__cg2900_new_state) \
-	CG2900_SET_STATE("boot_state", cg2900_info->boot_state, \
-			 __cg2900_new_state)
-#define SET_CLOSING_STATE(__cg2900_new_state) \
-	CG2900_SET_STATE("closing_state", cg2900_info->closing_state, \
-			 __cg2900_new_state)
-#define SET_FILE_LOAD_STATE(__cg2900_new_state) \
-	CG2900_SET_STATE("file_load_state", cg2900_info->file_load_state, \
-			 __cg2900_new_state)
-#define SET_DOWNLOAD_STATE(__cg2900_new_state) \
-	CG2900_SET_STATE("download_state", cg2900_info->download_state, \
-			 __cg2900_new_state)
-
 /** CHANNEL_BT_CMD - Bluetooth HCI H:4 channel
  * for Bluetooth commands in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_BT_CMD		0x01
+#define CHANNEL_BT_CMD				0x01
 
 /** CHANNEL_BT_ACL - Bluetooth HCI H:4 channel
  * for Bluetooth ACL data in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_BT_ACL		0x02
+#define CHANNEL_BT_ACL				0x02
 
 /** CHANNEL_BT_EVT - Bluetooth HCI H:4 channel
  * for Bluetooth events in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_BT_EVT		0x04
+#define CHANNEL_BT_EVT				0x04
 
 /** CHANNEL_FM_RADIO - Bluetooth HCI H:4 channel
  * for FM radio in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_FM_RADIO		0x08
+#define CHANNEL_FM_RADIO			0x08
 
 /** CHANNEL_GNSS - Bluetooth HCI H:4 channel
  * for GNSS in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_GNSS			0x09
+#define CHANNEL_GNSS				0x09
 
 /** CHANNEL_DEBUG - Bluetooth HCI H:4 channel
  * for internal debug data in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_DEBUG		0x0B
+#define CHANNEL_DEBUG				0x0B
 
 /** CHANNEL_STE_TOOLS - Bluetooth HCI H:4 channel
  * for development tools data in the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_STE_TOOLS		0x0D
+#define CHANNEL_STE_TOOLS			0x0D
 
 /** CHANNEL_HCI_LOGGER - Bluetooth HCI H:4 channel
  * for logging all transmitted H4 packets (on all channels).
  */
-#define CHANNEL_HCI_LOGGER		0xFA
+#define CHANNEL_HCI_LOGGER			0xFA
 
 /** CHANNEL_US_CTRL - Bluetooth HCI H:4 channel
  * for user space control of the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_US_CTRL		0xFC
+#define CHANNEL_US_CTRL				0xFC
 
 /** CHANNEL_CORE - Bluetooth HCI H:4 channel
  * for user space control of the ST-Ericsson connectivity controller.
  */
-#define CHANNEL_CORE			0xFD
+#define CHANNEL_CORE				0xFD
 
 /**
  * enum boot_state - BOOT-state for CG2900 chip driver.
@@ -324,7 +312,8 @@ static void create_and_send_bt_cmd(void *data, int length)
 
 	skb = cg2900_alloc_skb(length, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Couldn't alloc sk_buff with length %d", length);
+		dev_err(MAIN_DEV, "Couldn't alloc sk_buff with length %d\n",
+			length);
 		return;
 	}
 
@@ -339,7 +328,7 @@ static void create_and_send_bt_cmd(void *data, int length)
 		err = cg2900_send_to_chip(skb, false);
 
 	if (err) {
-		CG2900_ERR("Failed to transmit to chip (%d)", err);
+		dev_err(MAIN_DEV, "Failed to transmit to chip (%d)\n", err);
 		kfree_skb(skb);
 	}
 }
@@ -397,8 +386,8 @@ static bool fm_irpt_expected(u16 cmd_id)
 	}
 
 	if (retval)
-		CG2900_INFO("Following interrupt event expected for this "
-			    "Cmd complete evt, cmd_id = 0x%x.", cmd_id);
+		dev_dbg(MAIN_DEV, "Following interrupt event expected for this "
+			"Cmd complete evt: cmd_id = 0x%X\n", cmd_id);
 
 	return retval;
 }
@@ -415,8 +404,8 @@ static bool fm_is_do_cmd_irpt(u16 irpt_val)
 {
 	if ((irpt_val & CG2900_FM_IRPT_OPERATION_SUCCEEDED) ||
 	    (irpt_val & CG2900_FM_IRPT_OPERATION_FAILED)) {
-		CG2900_INFO("Irpt evt for FM do-command found, "
-			    "irpt_val = 0x%x.", irpt_val);
+		dev_dbg(MAIN_DEV, "Irpt evt for FM do-command found, "
+			"irpt_val = 0x%X\n", irpt_val);
 		return true;
 	}
 
@@ -437,7 +426,7 @@ static void create_work_item(work_func_t work_func)
 
 	new_work = kmalloc(sizeof(*new_work), GFP_ATOMIC);
 	if (!new_work) {
-		CG2900_ERR("Failed to alloc memory for work_struct!");
+		dev_err(MAIN_DEV, "Failed to alloc memory for work_struct\n");
 		return;
 	}
 
@@ -445,8 +434,9 @@ static void create_work_item(work_func_t work_func)
 
 	wq_err = queue_work(cg2900_info->wq, new_work);
 	if (!wq_err) {
-		CG2900_ERR("Failed to queue work_struct because it's already "
-			   "in the queue!");
+		dev_err(MAIN_DEV,
+			"Failed to queue work_struct because it's already "
+			"in the queue\n");
 		kfree(new_work);
 	}
 }
@@ -459,7 +449,7 @@ static void create_work_item(work_func_t work_func)
  */
 static void fm_reset_flow_ctrl(void)
 {
-	CG2900_INFO("fm_reset_flow_ctrl");
+	dev_dbg(MAIN_DEV, "fm_reset_flow_ctrl\n");
 
 	skb_queue_purge(&cg2900_info->tx_queue_fm);
 
@@ -486,16 +476,14 @@ static void fm_parse_cmd(u8 *data, u8 *cmd_func, u16 *cmd_id)
 	*cmd_id   = CG2900_FM_CMD_NONE;
 
 	if (pkt->opcode != CG2900_FM_GEN_ID_LEGACY) {
-		CG2900_ERR("Not an FM legacy command 0x%X", pkt->opcode);
+		dev_err(MAIN_DEV, "Not an FM legacy command 0x%X\n",
+			pkt->opcode);
 		return;
 	}
 
 	*cmd_func = pkt->fm_function;
-	CG2900_DBG("cmd_func 0x%X", *cmd_func);
-	if (*cmd_func == CG2900_FM_CMD_PARAM_WRITECOMMAND) {
+	if (*cmd_func == CG2900_FM_CMD_PARAM_WRITECOMMAND)
 		*cmd_id = cg2900_get_fm_cmd_id(le16_to_cpu(pkt->fm_cmd.head));
-		CG2900_DBG("cmd_id 0x%X", *cmd_id);
-	}
 }
 
 
@@ -524,27 +512,21 @@ static void fm_parse_event(u8 *data, u8 *event, u8 *cmd_func, u16 *cmd_id,
 		/* Command complete */
 		*event = CG2900_FM_EVENT_CMD_COMPLETE;
 		*cmd_func = pkt->evt.fm_function;
-		CG2900_DBG("cmd_func 0x%X", *cmd_func);
-		if (*cmd_func == CG2900_FM_CMD_PARAM_WRITECOMMAND) {
+		if (*cmd_func == CG2900_FM_CMD_PARAM_WRITECOMMAND)
 			*cmd_id = cg2900_get_fm_cmd_id(
 				le16_to_cpu(pkt->evt.response_head));
-			CG2900_DBG("cmd_id 0x%X", *cmd_id);
-		}
 	} else if (pkt->irq_v2.opcode == CG2900_FM_GEN_ID_LEGACY &&
 		   pkt->irq_v2.event_type == CG2900_FM_CMD_LEG_PARAM_IRQ) {
 		/* Interrupt, PG2 style */
 		*event = CG2900_FM_EVENT_INTERRUPT;
 		*intr_val = le16_to_cpu(pkt->irq_v2.irq);
-		CG2900_DBG("intr_val 0x%X", *intr_val);
 	} else if (pkt->irq_v1.opcode == CG2900_FM_GEN_ID_LEGACY) {
 		/* Interrupt, PG1 style */
 		*event = CG2900_FM_EVENT_INTERRUPT;
 		*intr_val = le16_to_cpu(pkt->irq_v1.irq);
-		CG2900_DBG("intr_val 0x%X", *intr_val);
-	} else {
-		CG2900_ERR("Not an FM legacy command 0x%X %X %X %X ...",
-			   data[0], data[1], data[2], data[3]);
-	}
+	} else
+		dev_err(MAIN_DEV, "Not an FM legacy command 0x%X %X %X %X\n",
+			data[0], data[1], data[2], data[3]);
 }
 
 /**
@@ -567,8 +549,8 @@ static void fm_update_mode(u8 *data)
 			(struct fm_leg_cmd *)(data + HCI_H4_SIZE);
 
 		cg2900_info->fm_radio_mode = le16_to_cpu(pkt->fm_cmd.data[0]);
-		CG2900_INFO("FM Radio mode changed to 0x%x",
-			    cg2900_info->fm_radio_mode);
+		dev_dbg(MAIN_DEV, "FM Radio mode changed to %d\n",
+			cg2900_info->fm_radio_mode);
 	}
 }
 
@@ -586,7 +568,7 @@ static void transmit_skb_from_tx_queue_bt(void)
 	struct cg2900_device *dev;
 	struct sk_buff *skb;
 
-	CG2900_INFO("transmit_skb_from_tx_queue_bt");
+	dev_dbg(MAIN_DEV, "transmit_skb_from_tx_queue_bt\n");
 
 	/* Dequeue an skb from the head of the list */
 	skb = skb_dequeue(&cg2900_info->tx_queue_bt);
@@ -602,8 +584,8 @@ static void transmit_skb_from_tx_queue_bt(void)
 		}
 
 		(cg2900_info->tx_nr_pkts_allowed_bt)--;
-		CG2900_DBG("tx_nr_pkts_allowed_bt = %d",
-			   cg2900_info->tx_nr_pkts_allowed_bt);
+		dev_dbg(MAIN_DEV, "tx_nr_pkts_allowed_bt = %d\n",
+			cg2900_info->tx_nr_pkts_allowed_bt);
 
 		dev = cg2900_skb_data(skb)->dev; /* dev is never NULL */
 
@@ -617,9 +599,10 @@ static void transmit_skb_from_tx_queue_bt(void)
 				(skb->data + HCI_H4_SIZE);
 
 			cg2900_info->audio_bt_cmd_op = le16_to_cpu(hdr->opcode);
-			CG2900_DBG("Sending cmd from audio driver, saving "
-				   "OpCode = 0x%X",
-				   cg2900_info->audio_bt_cmd_op);
+			dev_dbg(MAIN_DEV,
+				"Sending cmd from audio driver, saving "
+				"OpCode = 0x%04X\n",
+				cg2900_info->audio_bt_cmd_op);
 		}
 
 		cg2900_send_to_chip(skb, dev->logger_enabled);
@@ -642,7 +625,7 @@ static void transmit_skb_from_tx_queue_fm(void)
 	struct cg2900_device *dev;
 	struct sk_buff *skb;
 
-	CG2900_INFO("transmit_skb_from_tx_queue_fm");
+	dev_dbg(MAIN_DEV, "transmit_skb_from_tx_queue_fm\n");
 
 	/* Dequeue an skb from the head of the list */
 	skb = skb_dequeue(&cg2900_info->tx_queue_fm);
@@ -672,15 +655,15 @@ static void transmit_skb_from_tx_queue_fm(void)
 		 */
 		if (cg2900_get_fm_audio_dev() == dev) {
 			cg2900_info->audio_fm_cmd_id = cmd_id;
-			CG2900_DBG("audio_fm_cmd_id 0x%X",
-				   cg2900_info->audio_fm_cmd_id);
+			dev_dbg(MAIN_DEV, "Sending FM audio cmd 0x%X\n",
+				cg2900_info->audio_fm_cmd_id);
 			do_transmit = true;
 		}
 		if (cg2900_get_fm_radio_dev() == dev) {
 			cg2900_info->hci_fm_cmd_func = cmd_func;
 			fm_update_mode(&(skb->data[0]));
-			CG2900_DBG("hci_fm_cmd_func 0x%X",
-				   cg2900_info->hci_fm_cmd_func);
+			dev_dbg(MAIN_DEV, "Sending FM radio cmd 0x%X\n",
+				cg2900_info->hci_fm_cmd_func);
 			do_transmit = true;
 		}
 
@@ -716,9 +699,15 @@ static void transmit_skb_from_tx_queue_fm(void)
 static void update_flow_ctrl_bt(const struct sk_buff * const skb)
 {
 	u8 *data = &(skb->data[CG2900_SKB_RESERVE]);
-	u8 event_code = data[0];
+	struct hci_event_hdr *event;
 
-	if (HCI_BT_EVT_CMD_COMPLETE == event_code) {
+	event = (struct hci_event_hdr *)data;
+	data += sizeof(*event);
+
+	if (HCI_EV_CMD_COMPLETE == event->evt) {
+		struct hci_ev_cmd_complete *complete;
+		complete = (struct hci_ev_cmd_complete *)data;
+
 		/*
 		 * If it's HCI Command Complete Event then we might get some
 		 * HCI tickets back. Also we can decrease the number outstanding
@@ -729,15 +718,17 @@ static void update_flow_ctrl_bt(const struct sk_buff * const skb)
 		 * send them if there are tickets available.
 		 */
 		spin_lock_bh(&(cg2900_info->tx_bt_lock));
-		cg2900_info->tx_nr_pkts_allowed_bt =
-				data[HCI_BT_EVT_CMD_COMPL_NR_OF_PKTS_POS];
-		CG2900_DBG("New tx_nr_pkts_allowed_bt = %d",
-			   cg2900_info->tx_nr_pkts_allowed_bt);
+		cg2900_info->tx_nr_pkts_allowed_bt = complete->ncmd;
+		dev_dbg(MAIN_DEV, "New tx_nr_pkts_allowed_bt = %d\n",
+			cg2900_info->tx_nr_pkts_allowed_bt);
 
 		if (!skb_queue_empty(&cg2900_info->tx_queue_bt))
 			transmit_skb_from_tx_queue_bt();
 		spin_unlock_bh(&(cg2900_info->tx_bt_lock));
-	} else if (HCI_BT_EVT_CMD_STATUS == event_code) {
+	} else if (HCI_EV_CMD_STATUS == event->evt) {
+		struct hci_ev_cmd_status *status;
+		status = (struct hci_ev_cmd_status *)data;
+
 		/*
 		 * If it's HCI Command Status Event then we might get some
 		 * HCI tickets back. Also we can decrease the number outstanding
@@ -746,10 +737,9 @@ static void update_flow_ctrl_bt(const struct sk_buff * const skb)
 		 * send them if there are tickets available.
 		 */
 		spin_lock_bh(&(cg2900_info->tx_bt_lock));
-		cg2900_info->tx_nr_pkts_allowed_bt =
-				data[HCI_BT_EVT_CMD_STATUS_NR_OF_PKTS_POS];
-		CG2900_DBG("New tx_nr_pkts_allowed_bt = %d",
-			   cg2900_info->tx_nr_pkts_allowed_bt);
+		cg2900_info->tx_nr_pkts_allowed_bt = status->ncmd;
+		dev_dbg(MAIN_DEV, "New tx_nr_pkts_allowed_bt = %d\n",
+			cg2900_info->tx_nr_pkts_allowed_bt);
 
 		if (!skb_queue_empty(&cg2900_info->tx_queue_bt))
 			transmit_skb_from_tx_queue_bt();
@@ -789,10 +779,12 @@ static void update_flow_ctrl_fm(const struct sk_buff * const skb)
 		    !fm_irpt_expected(cmd_id)) {
 			cg2900_info->hci_fm_cmd_func = CG2900_FM_CMD_PARAM_NONE;
 			cg2900_info->audio_fm_cmd_id = CG2900_FM_CMD_NONE;
-			CG2900_DBG("FM cmd outstanding cmd func 0x%x",
-				   cg2900_info->hci_fm_cmd_func);
-			CG2900_DBG("FM cmd Audio outstanding cmd id 0x%x",
-				   cg2900_info->audio_fm_cmd_id);
+			dev_dbg(MAIN_DEV,
+				"FM_Write: Outstanding FM commands:\n"
+				"\tRadio: 0x%04X\n"
+				"\tAudio: 0x%04X\n",
+				cg2900_info->hci_fm_cmd_func,
+				cg2900_info->audio_fm_cmd_id);
 			transmit_skb_from_tx_queue_fm();
 
 		/*
@@ -803,7 +795,8 @@ static void update_flow_ctrl_fm(const struct sk_buff * const skb)
 		 */
 		} else if (cmd_id == cg2900_info->audio_fm_cmd_id) {
 			cg2900_info->tx_fm_audio_awaiting_irpt = true;
-			CG2900_DBG("FM Audio waiting for interrupt = true.");
+			dev_dbg(MAIN_DEV,
+				"FM Audio waiting for interrupt = true\n");
 		}
 		spin_unlock_bh(&(cg2900_info->tx_fm_lock));
 	} else if (event == CG2900_FM_EVENT_INTERRUPT) {
@@ -817,12 +810,15 @@ static void update_flow_ctrl_fm(const struct sk_buff * const skb)
 			spin_lock_bh(&(cg2900_info->tx_fm_lock));
 			cg2900_info->hci_fm_cmd_func = CG2900_FM_CMD_PARAM_NONE;
 			cg2900_info->audio_fm_cmd_id = CG2900_FM_CMD_NONE;
-			CG2900_DBG("FM cmd outstanding cmd func 0x%x",
-				   cg2900_info->hci_fm_cmd_func);
-			CG2900_DBG("FM cmd Audio outstanding cmd id 0x%x",
-				   cg2900_info->audio_fm_cmd_id);
+			dev_dbg(MAIN_DEV,
+				"FM_INT: Outstanding FM commands:\n"
+				"\tRadio: 0x%04X\n"
+				"\tAudio: 0x%04X\n",
+				cg2900_info->hci_fm_cmd_func,
+				cg2900_info->audio_fm_cmd_id);
 			cg2900_info->tx_fm_audio_awaiting_irpt = false;
-			CG2900_DBG("FM Audio waiting for interrupt = false.");
+			dev_dbg(MAIN_DEV,
+				"FM Audio waiting for interrupt = false\n");
 			transmit_skb_from_tx_queue_fm();
 			spin_unlock_bh(&(cg2900_info->tx_fm_lock));
 		}
@@ -835,11 +831,7 @@ static void update_flow_ctrl_fm(const struct sk_buff * const skb)
 static void send_bd_address(void)
 {
 	struct bt_vs_store_in_fs_cmd *cmd;
-	/*
-	 * The '-1' is for the first byte of the data field that's already
-	 * there.
-	 */
-	u8 plen = sizeof(*cmd) + BT_BDADDR_SIZE - 1;
+	u8 plen = sizeof(*cmd) + BT_BDADDR_SIZE;
 
 	cmd = kmalloc(plen, GFP_KERNEL);
 	if (!cmd)
@@ -850,9 +842,10 @@ static void send_bd_address(void)
 	cmd->user_id = CG2900_VS_STORE_IN_FS_USR_ID_BD_ADDR;
 	cmd->len = BT_BDADDR_SIZE;
 	/* Now copy the BD address received from user space control app. */
-	memcpy(&(cmd->data), bd_address, BT_BDADDR_SIZE);
+	memcpy(cmd->data, bd_address, BT_BDADDR_SIZE);
 
-	SET_BOOT_STATE(BOOT_SEND_BD_ADDRESS);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_SEND_BD_ADDRESS\n");
+	cg2900_info->boot_state = BOOT_SEND_BD_ADDRESS;
 
 	create_and_send_bt_cmd(cmd, plen);
 
@@ -915,7 +908,7 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 
 	line_buffer = kzalloc(LINE_BUFFER_LENGTH, GFP_ATOMIC);
 	if (!line_buffer) {
-		CG2900_ERR("Failed to allocate line_buffer");
+		dev_err(MAIN_DEV, "Failed to allocate line_buffer\n");
 		return false;
 	}
 
@@ -930,7 +923,8 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 		bytes_left_to_parse -= bytes_read;
 		if (bytes_left_to_parse <= 0) {
 			/* End of file => Leave while loop */
-			CG2900_ERR("Reached end of file. No file found!");
+			dev_err(MAIN_DEV,
+				"Reached end of file. No file found\n");
 			break;
 		}
 
@@ -944,7 +938,7 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 		hci_rev = 0;
 		lmp_sub = 0;
 
-		CG2900_DBG("Found a valid line <%s>", line_buffer);
+		dev_dbg(MAIN_DEV, "Found a valid line: \t%s\n", line_buffer);
 
 		/*
 		 * Check if we can find the correct HCI revision and
@@ -955,11 +949,11 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 			   *file_name) == 3
 		    && hci_rev == cg2900_info->chip_dev.chip.hci_revision
 		    && lmp_sub == cg2900_info->chip_dev.chip.hci_sub_version) {
-			CG2900_DBG("File found for chip\n"
-				   "\tFile name = %s\n"
-				   "\tHCI Revision = 0x%X\n"
-				   "\tLMP PAL Subversion = 0x%X",
-				   *file_name, hci_rev, lmp_sub);
+			dev_dbg(MAIN_DEV, "File found for chip:\n"
+				"\tFile name = %s\n"
+				"\tHCI Revision = 0x%X\n"
+				"\tLMP PAL Subversion = 0x%X\n",
+				*file_name, hci_rev, lmp_sub);
 
 			/*
 			 * Name has already been stored above. Nothing more to
@@ -1000,7 +994,8 @@ static void read_and_send_file_part(void)
 
 	if (bytes_to_copy <= 0) {
 		/* Nothing more to read in file. */
-		SET_DOWNLOAD_STATE(DOWNLOAD_SUCCESS);
+		dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_SUCCESS\n");
+		cg2900_info->download_state = DOWNLOAD_SUCCESS;
 		cg2900_info->chunk_id = 0;
 		cg2900_info->file_offset = 0;
 		return;
@@ -1009,16 +1004,13 @@ static void read_and_send_file_part(void)
 	/* There is more data to send */
 	logger_config = cg2900_get_hci_logger_config();
 
-	/*
-	 * There are bytes to transmit. Allocate a sk_buffer.
-	 * When calculating length to alloc the '-1' is because of the first
-	 * byte of the data field that is already defined in the struct.
-	 */
-	plen = sizeof(*cmd) - 1 + bytes_to_copy;
+	/* There are bytes to transmit. Allocate a sk_buffer */
+	plen = sizeof(*cmd) + bytes_to_copy;
 	skb = cg2900_alloc_skb(plen, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Couldn't allocate sk_buffer");
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV, "Couldn't allocate sk_buffer\n");
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		cg2900_chip_startup_finished(-EIO);
 		return;
 	}
@@ -1032,7 +1024,7 @@ static void read_and_send_file_part(void)
 	cg2900_info->chunk_id++;
 
 	/* Copy the data from offset position */
-	memcpy(&(cmd->data),
+	memcpy(cmd->data,
 	       &(cg2900_info->fw_file->data[cg2900_info->file_offset]),
 	       bytes_to_copy);
 
@@ -1064,13 +1056,14 @@ static void send_settings_file(void)
 		return;
 
 	/* Settings file finished. Release used resources */
-	CG2900_DBG("Settings file finished, release used resources");
+	dev_dbg(MAIN_DEV, "Settings file finished, release used resources\n");
 	if (cg2900_info->fw_file) {
 		release_firmware(cg2900_info->fw_file);
 		cg2900_info->fw_file = NULL;
 	}
 
-	SET_FILE_LOAD_STATE(FILE_LOAD_NO_MORE_FILES);
+	dev_dbg(MAIN_DEV, "New file_load_state: FILE_LOAD_NO_MORE_FILES\n");
+	cg2900_info->file_load_state = FILE_LOAD_NO_MORE_FILES;
 
 	/* Create and send HCI VS Store In FS command with bd address. */
 	send_bd_address();
@@ -1098,7 +1091,7 @@ static void send_patch_file(void)
 		return;
 
 	/* Patch file finished. Release used resources */
-	CG2900_DBG("Patch file finished, release used resources");
+	dev_dbg(MAIN_DEV, "Patch file finished, release used resources\n");
 	if (cg2900_info->fw_file) {
 		release_firmware(cg2900_info->fw_file);
 		cg2900_info->fw_file = NULL;
@@ -1108,17 +1101,21 @@ static void send_patch_file(void)
 			       cg2900_info->settings_file_name,
 			       cg2900_info->dev);
 	if (err < 0) {
-		CG2900_ERR("Couldn't get settings file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get settings file (%d)\n", err);
 		goto error_handling;
 	}
 	/* Now send the settings file */
-	SET_FILE_LOAD_STATE(FILE_LOAD_GET_STATIC_SETTINGS);
-	SET_DOWNLOAD_STATE(DOWNLOAD_PENDING);
+	dev_dbg(MAIN_DEV,
+		"New file_load_state: FILE_LOAD_GET_STATIC_SETTINGS\n");
+	cg2900_info->file_load_state = FILE_LOAD_GET_STATIC_SETTINGS;
+	dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_PENDING\n");
+	cg2900_info->download_state = DOWNLOAD_PENDING;
 	send_settings_file();
 	return;
 
 error_handling:
-	SET_BOOT_STATE(BOOT_FAILED);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+	cg2900_info->boot_state = BOOT_FAILED;
 	cg2900_chip_startup_finished(err);
 }
 
@@ -1138,7 +1135,7 @@ static void work_power_off_chip(struct work_struct *work)
 	struct cg2900_platform_data *pf_data;
 
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV, "work_power_off_chip: work == NULL\n");
 		return;
 	}
 
@@ -1156,13 +1153,15 @@ static void work_power_off_chip(struct work_struct *work)
 	 * If no command found for the device, just continue
 	 */
 	if (!skb) {
-		CG2900_ERR("Could not retrieve PowerSwitchOff command");
+		dev_err(MAIN_DEV,
+			"Could not retrieve PowerSwitchOff command\n");
 		goto shut_down_chip;
 	}
 
 	logger_config = cg2900_get_hci_logger_config();
 
-	CG2900_DBG("Got power_switch_off command. Add H4 header and transmit");
+	dev_dbg(MAIN_DEV,
+		"Got power_switch_off command. Add H4 header and transmit\n");
 
 	/*
 	 * Move the data pointer to the H:4 header position and store
@@ -1171,7 +1170,8 @@ static void work_power_off_chip(struct work_struct *work)
 	h4_header = skb_push(skb, CG2900_SKB_RESERVE);
 	*h4_header = CHANNEL_BT_CMD;
 
-	SET_CLOSING_STATE(CLOSING_POWER_SWITCH_OFF);
+	dev_dbg(MAIN_DEV, "New closing_state: CLOSING_POWER_SWITCH_OFF\n");
+	cg2900_info->closing_state = CLOSING_POWER_SWITCH_OFF;
 
 	if (logger_config)
 		cg2900_send_to_chip(skb, logger_config->bt_cmd_enable);
@@ -1185,7 +1185,8 @@ static void work_power_off_chip(struct work_struct *work)
 	schedule_timeout_interruptible(msecs_to_jiffies(POWER_SW_OFF_WAIT));
 
 shut_down_chip:
-	SET_CLOSING_STATE(CLOSING_SHUT_DOWN);
+	dev_dbg(MAIN_DEV, "New closing_state: CLOSING_SHUT_DOWN\n");
+	cg2900_info->closing_state = CLOSING_SHUT_DOWN;
 
 	(void)cg2900_chip_shutdown_finished(0);
 
@@ -1201,7 +1202,7 @@ shut_down_chip:
 static void work_reset_after_error(struct work_struct *work)
 {
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV, "work_reset_after_error: work == NULL\n");
 		return;
 	}
 
@@ -1222,7 +1223,8 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	const struct firmware *settings_info;
 
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV,
+			"work_load_patch_and_settings: work == NULL\n");
 		return;
 	}
 
@@ -1234,7 +1236,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	err = request_firmware(&patch_info, PATCH_INFO_FILE,
 			       cg2900_info->dev);
 	if (err) {
-		CG2900_ERR("Couldn't get patch info file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get patch info file (%d)\n", err);
 		goto error_handling;
 	}
 
@@ -1249,7 +1251,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	release_firmware(patch_info);
 
 	if (!file_found) {
-		CG2900_ERR("Couldn't find patch file! Major error!");
+		dev_err(MAIN_DEV, "Couldn't find patch file! Major error\n");
 		goto error_handling;
 	}
 
@@ -1258,7 +1260,8 @@ static void work_load_patch_and_settings(struct work_struct *work)
 			       FACTORY_SETTINGS_INFO_FILE,
 			       cg2900_info->dev);
 	if (err) {
-		CG2900_ERR("Couldn't get settings info file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get settings info file (%d)\n",
+			err);
 		goto error_handling;
 	}
 
@@ -1273,14 +1276,17 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	release_firmware(settings_info);
 
 	if (!file_found) {
-		CG2900_ERR("Couldn't find settings file! Major error!");
+		dev_err(MAIN_DEV, "Couldn't find settings file! Major error\n");
 		goto error_handling;
 	}
 
 	/* We now all info needed */
-	SET_BOOT_STATE(BOOT_DOWNLOAD_PATCH);
-	SET_DOWNLOAD_STATE(DOWNLOAD_PENDING);
-	SET_FILE_LOAD_STATE(FILE_LOAD_GET_PATCH);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_DOWNLOAD_PATCH\n");
+	cg2900_info->boot_state = BOOT_DOWNLOAD_PATCH;
+	dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_PENDING\n");
+	cg2900_info->download_state = DOWNLOAD_PENDING;
+	dev_dbg(MAIN_DEV, "New file_load_state: FILE_LOAD_GET_PATCH\n");
+	cg2900_info->file_load_state = FILE_LOAD_GET_PATCH;
 	cg2900_info->chunk_id = 0;
 	cg2900_info->file_offset = 0;
 	cg2900_info->fw_file = NULL;
@@ -1290,7 +1296,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 			       cg2900_info->patch_file_name,
 			       cg2900_info->dev);
 	if (err < 0) {
-		CG2900_ERR("Couldn't get patch file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get patch file (%d)\n", err);
 		goto error_handling;
 	}
 	send_patch_file();
@@ -1298,7 +1304,8 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	goto finished;
 
 error_handling:
-	SET_BOOT_STATE(BOOT_FAILED);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+	cg2900_info->boot_state = BOOT_FAILED;
 	cg2900_chip_startup_finished(-EIO);
 finished:
 	kfree(work);
@@ -1314,7 +1321,7 @@ finished:
 static void work_cont_file_download(struct work_struct *work)
 {
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV, "work_cont_file_download: work == NULL\n");
 		return;
 	}
 
@@ -1324,7 +1331,7 @@ static void work_cont_file_download(struct work_struct *work)
 	else if (cg2900_info->file_load_state == FILE_LOAD_GET_STATIC_SETTINGS)
 		send_settings_file();
 	else
-		CG2900_INFO("No more files to load");
+		dev_dbg(MAIN_DEV, "No more files to load\n");
 
 	kfree(work);
 }
@@ -1341,7 +1348,8 @@ static bool handle_reset_cmd_complete(u8 *data)
 {
 	u8 status = data[0];
 
-	CG2900_INFO("Received Reset complete event with status 0x%X", status);
+	dev_dbg(MAIN_DEV, "Received Reset complete event with status 0x%X\n",
+		status);
 
 	if (CLOSING_RESET != cg2900_info->closing_state)
 		return false;
@@ -1351,8 +1359,8 @@ static bool handle_reset_cmd_complete(u8 *data)
 		 * Continue in case of error, the chip is going to be shut down
 		 * anyway.
 		 */
-		CG2900_ERR("Command complete for HciReset received with "
-			   "error 0x%X !", status);
+		dev_err(MAIN_DEV, "Command complete for HciReset received with "
+			"error 0x%X\n", status);
 	}
 
 	create_work_item(work_power_off_chip);
@@ -1373,8 +1381,9 @@ static bool handle_vs_store_in_fs_cmd_complete(u8 *data)
 {
 	u8 status = data[0];
 
-	CG2900_INFO("Received Store_in_FS complete event with status 0x%X",
-		    status);
+	dev_dbg(MAIN_DEV,
+		"Received Store_in_FS complete event with status 0x%X\n",
+		status);
 
 	if (cg2900_info->boot_state != BOOT_SEND_BD_ADDRESS)
 		return false;
@@ -1383,15 +1392,19 @@ static bool handle_vs_store_in_fs_cmd_complete(u8 *data)
 		struct hci_command_hdr cmd;
 
 		/* Send HCI SystemReset command to activate patches */
-		SET_BOOT_STATE(BOOT_ACTIVATE_PATCHES_AND_SETTINGS);
+		dev_dbg(MAIN_DEV,
+			"New boot_state: BOOT_ACTIVATE_PATCHES_AND_SETTINGS\n");
+		cg2900_info->boot_state = BOOT_ACTIVATE_PATCHES_AND_SETTINGS;
 
 		cmd.opcode = cpu_to_le16(CG2900_BT_OP_VS_SYSTEM_RESET);
 		cmd.plen = 0; /* No parameters for System Reset */
 		create_and_send_bt_cmd(&cmd, sizeof(cmd));
 	} else {
-		CG2900_ERR("Command complete for StoreInFS received with error "
-			   "0x%X", status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Command complete for StoreInFS received with error "
+			"0x%X\n", status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		create_work_item(work_reset_after_error);
 	}
 
@@ -1417,10 +1430,13 @@ static bool handle_vs_write_file_block_cmd_complete(u8 *data)
 	if (HCI_BT_ERROR_NO_ERROR == status)
 		create_work_item(work_cont_file_download);
 	else {
-		CG2900_ERR("Command complete for WriteFileBlock received with"
-			   " error 0x%X", status);
-		SET_DOWNLOAD_STATE(DOWNLOAD_FAILED);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Command complete for WriteFileBlock received with"
+			" error 0x%X\n", status);
+		dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_FAILED\n");
+		cg2900_info->download_state = DOWNLOAD_FAILED;
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		if (cg2900_info->fw_file) {
 			release_firmware(cg2900_info->fw_file);
 			cg2900_info->fw_file = NULL;
@@ -1450,10 +1466,13 @@ static bool handle_vs_write_file_block_cmd_status(u8 status)
 	 * CmdComplete.
 	 */
 	if (HCI_BT_ERROR_NO_ERROR != status) {
-		CG2900_ERR("Command status for WriteFileBlock received with"
-			   " error 0x%X", status);
-		SET_DOWNLOAD_STATE(DOWNLOAD_FAILED);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Command status for WriteFileBlock received with"
+			" error 0x%X\n", status);
+		dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_FAILED\n");
+		cg2900_info->download_state = DOWNLOAD_FAILED;
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		if (cg2900_info->fw_file) {
 			release_firmware(cg2900_info->fw_file);
 			cg2900_info->fw_file = NULL;
@@ -1479,15 +1498,17 @@ static bool handle_vs_power_switch_off_cmd_complete(u8 *data)
 	if (CLOSING_POWER_SWITCH_OFF != cg2900_info->closing_state)
 		return false;
 
-	CG2900_INFO("handle_vs_power_switch_off_cmd_complete");
+	dev_dbg(MAIN_DEV,
+		"handle_vs_power_switch_off_cmd_complete status %d\n", status);
 
 	/*
 	 * We were waiting for this but we don't need to do anything upon
 	 * reception except warn for error status
 	 */
 	if (HCI_BT_ERROR_NO_ERROR != status)
-		CG2900_ERR("Command Complete for PowerSwitchOff received with "
-			   "error 0x%X", status);
+		dev_err(MAIN_DEV,
+			"Command Complete for PowerSwitchOff received with "
+			"error 0x%X", status);
 
 	return true;
 }
@@ -1508,22 +1529,26 @@ static bool handle_vs_system_reset_cmd_complete(u8 *data)
 	if (cg2900_info->boot_state != BOOT_ACTIVATE_PATCHES_AND_SETTINGS)
 		return false;
 
-	CG2900_INFO("handle_vs_system_reset_cmd_complete");
+	dev_dbg(MAIN_DEV, "handle_vs_system_reset_cmd_complete status %d\n",
+		status);
 
 	if (HCI_BT_ERROR_NO_ERROR == status) {
 		/*
 		 * We are now almost finished. Shut off BT Core. It will be
 		 * re-enabled by the Bluetooth driver when needed.
 		 */
-		SET_BOOT_STATE(BOOT_DISABLE_BT);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_DISABLE_BT\n");
+		cg2900_info->boot_state = BOOT_DISABLE_BT;
 		cmd.op_code = cpu_to_le16(CG2900_BT_OP_VS_BT_ENABLE);
 		cmd.plen = BT_PARAM_LEN(sizeof(cmd));
 		cmd.enable = CG2900_BT_DISABLE;
 		create_and_send_bt_cmd(&cmd, sizeof(cmd));
 	} else {
-		CG2900_ERR("Received Reset complete event with status 0x%X",
-			   status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Received Reset complete event with status 0x%X\n",
+			status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		cg2900_chip_startup_finished(-EIO);
 	}
 
@@ -1543,16 +1568,18 @@ static bool handle_vs_bt_enable_cmd_status(u8 status)
 	if (cg2900_info->boot_state != BOOT_DISABLE_BT)
 		return false;
 
-	CG2900_INFO("handle_vs_bt_enable_cmd_status");
+	dev_dbg(MAIN_DEV, "handle_vs_bt_enable_cmd_status status %d\n", status);
 
 	/*
 	 * Only do something if there is an error. Otherwise we will wait for
 	 * CmdComplete.
 	 */
 	if (HCI_BT_ERROR_NO_ERROR != status) {
-		CG2900_ERR("Received BtEnable status event with status 0x%X",
-			   status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Received BtEnable status event with status 0x%X\n",
+			status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		cg2900_chip_startup_finished(-EIO);
 	}
 
@@ -1574,19 +1601,23 @@ static bool handle_vs_bt_enable_cmd_complete(u8 *data)
 	if (cg2900_info->boot_state != BOOT_DISABLE_BT)
 		return false;
 
-	CG2900_INFO("handle_vs_bt_enable_cmd_complete");
+	dev_dbg(MAIN_DEV, "handle_vs_bt_enable_cmd_complete status %d\n",
+		status);
 
 	if (HCI_BT_ERROR_NO_ERROR == status) {
 		/*
 		 * The boot sequence is now finished successfully.
 		 * Set states and signal to waiting thread.
 		 */
-		SET_BOOT_STATE(BOOT_READY);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_READY\n");
+		cg2900_info->boot_state = BOOT_READY;
 		cg2900_chip_startup_finished(0);
 	} else {
-		CG2900_ERR("Received BtEnable complete event with status 0x%X",
-			   status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Received BtEnable complete event with status 0x%X\n",
+			status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		cg2900_info->boot_state = BOOT_FAILED;
 		cg2900_chip_startup_finished(-EIO);
 	}
 
@@ -1624,8 +1655,9 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 
 		op_code = le16_to_cpu(cmd_complete->opcode);
 
-		CG2900_DBG_DATA("Received Command Complete: op_code = 0x%04X",
-				op_code);
+		dev_dbg(MAIN_DEV,
+			"Received Command Complete: op_code = 0x%04X\n",
+			op_code);
 		/* Move to first byte after OCF */
 		data += sizeof(*cmd_complete);
 
@@ -1650,8 +1682,8 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 
 		op_code = le16_to_cpu(cmd_status->opcode);
 
-		CG2900_DBG_DATA("Received Command Status: op_code = 0x%04X",
-				op_code);
+		dev_dbg(MAIN_DEV, "Received Command Status: op_code = 0x%04X\n",
+			op_code);
 
 		if (op_code == CG2900_BT_OP_VS_WRITE_FILE_BLOCK)
 			pkt_handled = handle_vs_write_file_block_cmd_status
@@ -1693,8 +1725,8 @@ static void transmit_skb_with_flow_ctrl_bt(struct sk_buff *skb,
 
 	if ((cg2900_info->tx_nr_pkts_allowed_bt) > 0) {
 		(cg2900_info->tx_nr_pkts_allowed_bt)--;
-		CG2900_DBG("New tx_nr_pkts_allowed_bt = %d",
-			   cg2900_info->tx_nr_pkts_allowed_bt);
+		dev_dbg(MAIN_DEV, "New tx_nr_pkts_allowed_bt = %d\n",
+			cg2900_info->tx_nr_pkts_allowed_bt);
 
 		/*
 		 * If it's command from audio app store the OpCode,
@@ -1706,15 +1738,16 @@ static void transmit_skb_with_flow_ctrl_bt(struct sk_buff *skb,
 				(skb->data + HCI_H4_SIZE);
 
 			cg2900_info->audio_bt_cmd_op = le16_to_cpu(hdr->opcode);
-			CG2900_DBG("Sending cmd from audio driver, saving "
-				   "OpCode = 0x%x",
-				   cg2900_info->audio_bt_cmd_op);
+			dev_dbg(MAIN_DEV,
+				"Sending cmd from audio driver, saving "
+				"OpCode = 0x%X\n",
+				cg2900_info->audio_bt_cmd_op);
 		}
 
 		cg2900_send_to_chip(skb, dev->logger_enabled);
 	} else {
-		CG2900_DBG("Not allowed to send cmd to controller, "
-			    "storing in TX queue.");
+		dev_dbg(MAIN_DEV, "Not allowed to send cmd to controller, "
+			"storing in TX queue\n");
 
 		cg2900_skb_data(skb)->dev = dev;
 		skb_queue_tail(&cg2900_info->tx_queue_bt, skb);
@@ -1764,8 +1797,8 @@ static void transmit_skb_with_flow_ctrl_fm(struct sk_buff *skb,
 	if (cg2900_get_fm_radio_dev() == dev &&
 	    cg2900_info->audio_fm_cmd_id == CG2900_FM_CMD_NONE) {
 		cg2900_info->hci_fm_cmd_func = cmd_func;
-		CG2900_DBG("hci_fm_cmd_func 0x%X",
-			   cg2900_info->hci_fm_cmd_func);
+		dev_dbg(MAIN_DEV, "Sending FM radio command 0x%X\n",
+			cg2900_info->hci_fm_cmd_func);
 		/* If a GotoMode command update FM mode */
 		fm_update_mode(&(skb->data[0]));
 		cg2900_send_to_chip(skb, dev->logger_enabled);
@@ -1778,12 +1811,13 @@ static void transmit_skb_with_flow_ctrl_fm(struct sk_buff *skb,
 		 * command complete event.
 		 */
 		cg2900_info->audio_fm_cmd_id = cmd_id;
-		CG2900_DBG("audio_fm_cmd_id 0x%X",
-			   cg2900_info->audio_fm_cmd_id);
+		dev_dbg(MAIN_DEV, "Sending FM audio command 0x%X\n",
+			cg2900_info->audio_fm_cmd_id);
 		cg2900_send_to_chip(skb, dev->logger_enabled);
 	} else {
-		CG2900_DBG("Not allowed to send cmd to controller, storing in "
-			   "TX queue");
+		dev_dbg(MAIN_DEV,
+			"Not allowed to send FM cmd to controller, storing in "
+			"TX queue\n");
 
 		cg2900_skb_data(skb)->dev = dev;
 		skb_queue_tail(&cg2900_info->tx_queue_fm, skb);
@@ -1804,7 +1838,8 @@ static void transmit_skb_with_flow_ctrl_fm(struct sk_buff *skb,
 static int chip_startup(struct cg2900_chip_dev *dev)
 {
 	/* Start the boot sequence */
-	SET_BOOT_STATE(BOOT_GET_FILES_TO_LOAD);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_GET_FILES_TO_LOAD\n");
+	cg2900_info->boot_state = BOOT_GET_FILES_TO_LOAD;
 	create_work_item(work_load_patch_and_settings);
 
 	return 0;
@@ -1828,7 +1863,8 @@ static int chip_shutdown(struct cg2900_chip_dev *dev)
 	 * Transmit HCI reset command to ensure the chip is using
 	 * the correct transport and to put BT part in reset.
 	 */
-	SET_CLOSING_STATE(CLOSING_RESET);
+	dev_dbg(MAIN_DEV, "New closing_state: CLOSING_RESET\n");
+	cg2900_info->closing_state = CLOSING_RESET;
 	cmd.opcode = cpu_to_le16(HCI_OP_RESET);
 	cmd.plen = 0; /* No parameters for HCI reset */
 	create_and_send_bt_cmd(&cmd, sizeof(cmd));
@@ -1922,6 +1958,8 @@ static int get_h4_channel(char *name, int *h4_channel)
 			/* Device found. Return H4 channel */
 			*h4_channel = cg2900_channels[i].h4_channel;
 			err = 0;
+			dev_dbg(MAIN_DEV, "%s matches channel %d\n", name,
+				*h4_channel);
 		}
 	}
 
@@ -1947,20 +1985,19 @@ static bool is_bt_audio_user(int h4_channel, const struct sk_buff * const skb)
 	if (h4_channel != CHANNEL_BT_EVT)
 		return false;
 
-	if (HCI_BT_EVT_CMD_COMPLETE == hdr->evt)
+	if (HCI_EV_CMD_COMPLETE == hdr->evt)
 		opcode = le16_to_cpu(
 			((struct hci_ev_cmd_complete *)payload)->opcode);
-	else if (HCI_BT_EVT_CMD_STATUS == hdr->evt)
+	else if (HCI_EV_CMD_STATUS == hdr->evt)
 		opcode = le16_to_cpu(
 			((struct hci_ev_cmd_status *)payload)->opcode);
 
 	if (opcode != 0 && opcode == cg2900_info->audio_bt_cmd_op) {
-		CG2900_DBG("BT OpCode match = 0x%04X", opcode);
+		dev_dbg(MAIN_DEV, "Audio BT OpCode match = 0x%04X\n", opcode);
 		cg2900_info->audio_bt_cmd_op = CG2900_BT_OPCODE_NONE;
 		return true;
-	} else {
+	} else
 		return false;
-	}
 }
 
 /**
@@ -1987,8 +2024,9 @@ static bool is_fm_audio_user(int h4_channel, const struct sk_buff * const skb)
 		if ((event == CG2900_FM_EVENT_CMD_COMPLETE) &&
 		    (cmd_func == CG2900_FM_CMD_PARAM_WRITECOMMAND) &&
 		    (cmd_id == cg2900_info->audio_fm_cmd_id)) {
-			CG2900_DBG("FM Audio Function Code match = 0x%04X",
-				   cmd_id);
+			dev_dbg(MAIN_DEV,
+				"FM Audio Function Code match = 0x%04X\n",
+				cmd_id);
 			bt_audio = true;
 			goto finished;
 		}
@@ -2013,7 +2051,6 @@ finished:
 static void last_bt_user_removed(struct cg2900_chip_dev *dev)
 {
 	spin_lock_bh(&cg2900_info->tx_bt_lock);
-
 	skb_queue_purge(&cg2900_info->tx_queue_bt);
 
 	/*
@@ -2051,7 +2088,7 @@ static void last_fm_user_removed(struct cg2900_chip_dev *dev)
  */
 static bool check_chip_support(struct cg2900_chip_dev *dev)
 {
-	CG2900_INFO("CG2900: check_chip_support");
+	dev_dbg(MAIN_DEV, "check_chip_support\n");
 
 	/*
 	 * Check if this is a CG2900 revision.
@@ -2062,14 +2099,16 @@ static bool check_chip_support(struct cg2900_chip_dev *dev)
 	    (dev->chip.hci_revision != CG2900_PG1_SPECIAL_REV &&
 	     (dev->chip.hci_revision < CG2900_SUPP_REVISION_MIN ||
 	      dev->chip.hci_revision > CG2900_SUPP_REVISION_MAX))) {
-		CG2900_DBG("Chip not supported by CG2900 driver\n"
-			   "\tMan: 0x%02X\n\tRev: 0x%04X\n\tSub: 0x%04X",
-			   dev->chip.manufacturer, dev->chip.hci_revision,
-			   dev->chip.hci_sub_version);
+		dev_dbg(MAIN_DEV, "Chip not supported by CG2900 driver\n"
+			"\tMan: 0x%02X\n"
+			"\tRev: 0x%04X\n"
+			"\tSub: 0x%04X\n",
+			dev->chip.manufacturer, dev->chip.hci_revision,
+			dev->chip.hci_sub_version);
 		return false;
 	}
 
-	CG2900_INFO("Chip supported by the CG2900 driver");
+	dev_info(MAIN_DEV, "Chip supported by the CG2900 driver\n");
 	/* Store needed data */
 	dev->user_data = cg2900_info;
 	memcpy(&(cg2900_info->chip_dev), dev, sizeof(*dev));
@@ -2107,11 +2146,11 @@ static int __devinit cg2900_chip_probe(struct platform_device *pdev)
 {
 	int err = 0;
 
-	CG2900_INFO("cg2900_chip_probe");
+	pr_debug("cg2900_chip_probe");
 
 	cg2900_info = kzalloc(sizeof(*cg2900_info), GFP_ATOMIC);
 	if (!cg2900_info) {
-		CG2900_ERR("Couldn't allocate cg2900_info");
+		pr_err("Couldn't allocate cg2900_info");
 		err = -ENOMEM;
 		goto finished;
 	}
@@ -2136,7 +2175,7 @@ static int __devinit cg2900_chip_probe(struct platform_device *pdev)
 
 	cg2900_info->wq = create_singlethread_workqueue(WQ_NAME);
 	if (!cg2900_info->wq) {
-		CG2900_ERR("Could not create workqueue");
+		dev_err(MAIN_DEV, "Could not create workqueue\n");
 		err = -ENOMEM;
 		goto err_handling_free_info;
 	}
@@ -2144,23 +2183,27 @@ static int __devinit cg2900_chip_probe(struct platform_device *pdev)
 	/* Allocate file names that will be used, deallocated in cg2900_exit */
 	cg2900_info->patch_file_name = kzalloc(NAME_MAX + 1, GFP_ATOMIC);
 	if (!cg2900_info->patch_file_name) {
-		CG2900_ERR("Couldn't allocate name buffer for patch file.");
+		dev_err(MAIN_DEV,
+			"Couldn't allocate name buffer for patch file\n");
 		err = -ENOMEM;
 		goto err_handling_destroy_wq;
 	}
 	/* Allocate file names that will be used, deallocated in cg2900_exit */
 	cg2900_info->settings_file_name = kzalloc(NAME_MAX + 1, GFP_ATOMIC);
 	if (!cg2900_info->settings_file_name) {
-		CG2900_ERR("Couldn't allocate name buffers settings file.");
+		dev_err(MAIN_DEV,
+			"Couldn't allocate name buffers settings file\n");
 		err = -ENOMEM;
 		goto err_handling_free_patch_name;
 	}
 
 	err = cg2900_register_chip_driver(&chip_support_callbacks);
 	if (err) {
-		CG2900_ERR("Couldn't register chip driver (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't register chip driver (%d)\n", err);
 		goto err_handling_free_settings_name;
 	}
+
+	dev_info(MAIN_DEV, "CG2900 chip driver started\n");
 
 	goto finished;
 
@@ -2186,7 +2229,7 @@ finished:
  */
 static int __devexit cg2900_chip_remove(struct platform_device *pdev)
 {
-	CG2900_INFO("cg2900_chip_remove");
+	pr_debug("cg2900_chip_remove");
 
 	if (!cg2900_info)
 		return 0;
@@ -2194,6 +2237,7 @@ static int __devexit cg2900_chip_remove(struct platform_device *pdev)
 	kfree(cg2900_info->settings_file_name);
 	kfree(cg2900_info->patch_file_name);
 	destroy_workqueue(cg2900_info->wq);
+	dev_info(MAIN_DEV, "CG2900 chip driver removed\n");
 	kfree(cg2900_info);
 	cg2900_info = NULL;
 	return 0;
@@ -2215,7 +2259,7 @@ static struct platform_driver cg2900_chip_driver = {
  */
 static int __init cg2900_chip_init(void)
 {
-	CG2900_INFO("cg2900_chip_init");
+	pr_debug("cg2900_chip_init");
 	return platform_driver_register(&cg2900_chip_driver);
 }
 
@@ -2226,7 +2270,7 @@ static int __init cg2900_chip_init(void)
  */
 static void __exit cg2900_chip_exit(void)
 {
-	CG2900_INFO("cg2900_chip_exit");
+	pr_debug("cg2900_chip_exit");
 	platform_driver_unregister(&cg2900_chip_driver);
 }
 

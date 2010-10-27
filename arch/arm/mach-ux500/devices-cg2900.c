@@ -13,12 +13,15 @@
  * Board specific device support for the Linux Bluetooth HCI H:4 Driver
  * for ST-Ericsson connectivity controller.
  */
+#define NAME			"devices-cg2900"
+#define pr_fmt(fmt)		NAME ": " fmt "\n"
 
 #include <asm/byteorder.h>
 #include <asm-generic/errno-base.h>
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/skbuff.h>
@@ -39,7 +42,6 @@
 
 #define GBF_ENA_RESET_NAME		"gbf_ena_reset"
 #define BT_ENABLE_NAME			"bt_enable"
-#define CG2900_NAME			"cg2900_devices"
 
 #define UART_LINES_NUM			4
 
@@ -113,7 +115,7 @@ static struct sk_buff *cg2900_get_power_switch_off_cmd(u16 *op_code)
 
 	skb = alloc_skb(sizeof(*cmd) + H4_HEADER_LENGTH, GFP_KERNEL);
 	if (!skb) {
-		pr_err(CG2900_NAME "Could not allocate skb");
+		pr_err("Could not allocate skb");
 		return NULL;
 	}
 
@@ -153,27 +155,25 @@ static int cg2900_init(void)
 
 	err = gpio_request(GBF_ENA_RESET_GPIO, GBF_ENA_RESET_NAME);
 	if (err < 0) {
-		pr_err(CG2900_NAME "gpio_request failed with err: %d", err);
+		pr_err("gpio_request failed with err: %d", err);
 		goto finished;
 	}
 
 	err = gpio_direction_output(GBF_ENA_RESET_GPIO, 1);
 	if (err < 0) {
-		pr_err(CG2900_NAME "gpio_direction_output failed with err: %d",
-		       err);
+		pr_err("gpio_direction_output failed with err: %d", err);
 		goto error_handling;
 	}
 
 	err = gpio_request(BT_ENABLE_GPIO, BT_ENABLE_NAME);
 	if (err < 0) {
-		pr_err(CG2900_NAME "gpio_request failed with err: %d", err);
+		pr_err("gpio_request failed with err: %d", err);
 		goto finished;
 	}
 
 	err = gpio_direction_output(BT_ENABLE_GPIO, 1);
 	if (err < 0) {
-		pr_err(CG2900_NAME "gpio_direction_output failed with err: %d",
-		       err);
+		pr_err("gpio_direction_output failed with err: %d", err);
 		goto error_handling;
 	}
 
@@ -214,7 +214,7 @@ static int cg2900_disable_uart(void)
 
 error:
 	(void)nmk_config_pins(uart0_enabled, UART_LINES_NUM);
-	pr_err(CG2900_NAME "Cannot set interrupt (%d)", err);
+	pr_err("Cannot set interrupt (%d)", err);
 	return err;
 }
 
@@ -226,7 +226,7 @@ static int cg2900_enable_uart(void)
 	/* Restore UART settings. */
 	err = nmk_config_pins(uart0_enabled, UART_LINES_NUM);
 	if (err)
-		pr_err(CG2900_NAME "Unable to enable UART (%d)", err);
+		pr_err("Unable to enable UART (%d)", err);
 
 	return err;
 }

@@ -900,7 +900,7 @@ static struct platform_driver btcg2900_driver = {
  */
 static int __init btcg2900_init(void)
 {
-	BT_INFO("btcg2900_init");
+	BT_DBG("btcg2900_init");
 	return platform_driver_register(&btcg2900_driver);
 }
 
@@ -911,7 +911,7 @@ static int __init btcg2900_init(void)
  */
 static void __exit btcg2900_exit(void)
 {
-	BT_INFO("btcg2900_exit");
+	BT_DBG("btcg2900_exit");
 	platform_driver_unregister(&btcg2900_driver);
 }
 

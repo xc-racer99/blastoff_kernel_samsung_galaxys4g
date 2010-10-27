@@ -12,6 +12,8 @@
  *
  * Linux Bluetooth UART Driver for ST-Ericsson CG2900 connectivity controller.
  */
+#define NAME			"cg2900_uart"
+#define pr_fmt(fmt)		NAME ": " fmt "\n"
 
 #include <asm/byteorder.h>
 #include <linux/device.h>
@@ -36,32 +38,23 @@
 
 #include "cg2900_chip.h"
 #include "cg2900_core.h"
-#include "cg2900_debug.h"
-#include "hci_defines.h"
+
+#define MAIN_DEV		(uart_info->dev)
 
 /* Workqueues' names */
 #define UART_WQ_NAME		"cg2900_uart_wq"
 #define UART_NAME		"cg2900_uart"
 
-/* Standardized Bluetooth command channels */
-#define HCI_BT_CMD_H4_CHANNEL	0x01
-#define HCI_BT_ACL_H4_CHANNEL	0x02
-#define HCI_BT_EVT_H4_CHANNEL	0x04
-
-/* H4 channels specific for CG2900 */
-#define HCI_FM_RADIO_H4_CHANNEL	0x08
-#define HCI_GNSS_H4_CHANNEL	0x09
+/*
+ * A BT command complete event without any parameters is the defined size plus
+ * 1 byte extra for the status field which is always present in a
+ * command complete event.
+ */
+#define HCI_BT_CMD_COMPLETE_LEN	(sizeof(struct hci_ev_cmd_complete) + 1)
 
 /* Timers used in milliseconds */
 #define UART_TX_TIMEOUT		100
 #define UART_RESP_TIMEOUT	1000
-
-/* State-setting defines */
-#define SET_BAUD_STATE(__new_state) \
-	CG2900_SET_STATE("baud_rate_state", uart_info->baud_rate_state, \
-			 __new_state)
-#define SET_SLEEP_STATE(__new_state) \
-	CG2900_SET_STATE("sleep_state", uart_info->sleep_state, __new_state)
 
 /* Number of bytes to reserve at start of sk_buffer when receiving packet */
 #define RX_SKB_RESERVE		8
@@ -82,20 +75,6 @@
 #define HCI_ACL_LEN_POS		3
 #define FM_RADIO_LEN_POS	1
 #define GNSS_LEN_POS		2
-
-/* Bytes in the command Hci_Cmd_ST_Set_Uart_Baud_Rate */
-#define SET_BAUD_RATE_LSB	0x09
-#define SET_BAUD_RATE_MSB	0xFC
-#define SET_BAUD_RATE_PAYL_LEN	0x01
-#define SET_BAUD_RATE_LEN	0x04
-#define BAUD_RATE_57600		0x03
-#define BAUD_RATE_115200	0x02
-#define BAUD_RATE_230400	0x01
-#define BAUD_RATE_460800	0x00
-#define BAUD_RATE_921600	0x20
-#define BAUD_RATE_2000000	0x25
-#define BAUD_RATE_3000000	0x27
-#define BAUD_RATE_4000000	0x2B
 
 /* Baud rate defines */
 #define ZERO_BAUD_RATE		0
@@ -175,18 +154,6 @@ enum baud_rate_change_state {
 };
 
 /**
- * struct uart_work_struct - Work structure for UART module.
- * @work:	Work structure.
- * @data:	Pointer to private data.
- *
- * This structure is used to pack work for work queue.
- */
-struct uart_work_struct{
-	struct work_struct	work;
-	void			*data;
-};
-
-/**
  * struct test_char_dev_info - Main UART info structure.
  * @wq:			UART work queue.
  * @tx_queue:		TX queue for sending data to chip.
@@ -233,6 +200,7 @@ static struct uart_info *uart_info;
 /* Module parameters */
 static int uart_default_baud = DEFAULT_BAUD_RATE;
 static int uart_high_baud = HIGH_BAUD_RATE;
+static int uart_debug;
 
 static DECLARE_WAIT_QUEUE_HEAD(uart_wait_queue);
 
@@ -262,32 +230,31 @@ static bool is_chip_flow_off(struct tty_struct *tty)
  * create_work_item() - Create work item and add it to the work queue.
  * @wq:		work queue struct where the work will be added.
  * @work_func:	Work function.
- * @data:	Private data for the work.
  *
  * Returns:
  *   0 if there is no error.
  *   -EBUSY if not possible to queue work.
  *   -ENOMEM if allocation fails.
  */
-static int create_work_item(struct workqueue_struct *wq, work_func_t work_func,
-			    void *data)
+static int create_work_item(work_func_t work_func)
 {
-	struct uart_work_struct *new_work;
-	int err;
+	struct work_struct *new_work;
+	int res;
 
 	new_work = kmalloc(sizeof(*new_work), GFP_ATOMIC);
 	if (!new_work) {
-		CG2900_ERR("Failed to alloc memory for uart_work_struct!");
+		dev_err(MAIN_DEV,
+			"Failed to alloc memory for uart_work_struct\n");
 		return -ENOMEM;
 	}
 
-	new_work->data = data;
-	INIT_WORK(&new_work->work, work_func);
+	INIT_WORK(new_work, work_func);
 
-	err = queue_work(wq, &new_work->work);
-	if (!err) {
-		CG2900_ERR("Failed to queue work_struct because it's already "
-			   "in the queue!");
+	res = queue_work(uart_info->wq, new_work);
+	if (!res) {
+		dev_err(MAIN_DEV,
+			"Failed to queue work_struct because it's already "
+			"in the queue\n");
 		kfree(new_work);
 		return -EBUSY;
 	}
@@ -311,7 +278,7 @@ static bool set_tty_baud(struct tty_struct *tty, int baud)
 
 	old_termios = kmalloc(sizeof(*old_termios), GFP_ATOMIC);
 	if (!old_termios) {
-		CG2900_ERR("Could not allocate termios");
+		dev_err(MAIN_DEV, "Could not allocate termios\n");
 		return false;
 	}
 
@@ -328,7 +295,7 @@ static bool set_tty_baud(struct tty_struct *tty, int baud)
 	if (tty->ops->set_termios)
 		tty->ops->set_termios(tty, old_termios);
 	else {
-		CG2900_ERR("Can not set new baudrate.");
+		dev_err(MAIN_DEV, "Cannot set new baudrate\n");
 		/* Copy back the old termios to restore old setting. */
 		memcpy(tty->termios, old_termios, sizeof(*old_termios));
 		retval = false;
@@ -353,6 +320,7 @@ static void handle_cts_irq(struct work_struct *work)
 {
 	/* Restart timer and disable interrupt. */
 	update_timer();
+	kfree(work);
 }
 
 /**
@@ -372,9 +340,10 @@ static irqreturn_t cts_interrupt(int irq, void *dev_id)
 	disable_irq_nosync(irq);
 
 	/* If chip is suspended, resume callback will be called. */
-	if (CHIP_SUSPENDED != uart_info->sleep_state)
+	if (CHIP_SUSPENDED != uart_info->sleep_state) {
 		/* Create work and leave IRQ context. */
-		(void)create_work_item(uart_info->wq, handle_cts_irq, NULL);
+		(void)create_work_item(handle_cts_irq);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -397,7 +366,7 @@ static int set_cts_irq(void)
 	if (pf_data->uart.disable_uart) {
 		err = pf_data->uart.disable_uart();
 		if (err) {
-			CG2900_ERR("Could not disable UART (%d)", err);
+			dev_err(MAIN_DEV, "Could not disable UART (%d)\n", err);
 			goto error;
 		}
 	}
@@ -409,7 +378,7 @@ static int set_cts_irq(void)
 			  UART_NAME,
 			  NULL);
 	if (err) {
-		CG2900_ERR("Could not request CTS IRQ (%d)", err);
+		dev_err(MAIN_DEV, "Could not request CTS IRQ (%d)\n", err);
 		goto error;
 	}
 
@@ -440,7 +409,8 @@ static void unset_cts_irq(void)
 	if (pf_data->uart.enable_uart) {
 		err = pf_data->uart.enable_uart();
 		if (err)
-			CG2900_ERR("Unable to enable UART Hardware (%d)", err);
+			dev_err(MAIN_DEV,
+				"Unable to enable UART Hardware (%d)\n", err);
 	}
 }
 
@@ -479,10 +449,11 @@ static void update_timer(void)
 	tty_unthrottle(tty);
 
 	/* Unset BREAK. */
-	CG2900_DBG("Clear break");
+	dev_dbg(MAIN_DEV, "update_timer: Clear break\n");
 	tty->ops->break_ctl(tty, TTY_BREAK_OFF);
 
-	SET_SLEEP_STATE(CHIP_AWAKE);
+	dev_dbg(MAIN_DEV, "New sleep_state: CHIP_AWAKE\n");
+	uart_info->sleep_state = CHIP_AWAKE;
 
 finished:
 	mutex_unlock(&(uart_info->sleep_state_lock));
@@ -528,28 +499,32 @@ static void sleep_timer_expired(unsigned long data)
 		(void)set_tty_baud(tty, ZERO_BAUD_RATE);
 
 		if (set_cts_irq() < 0) {
-			CG2900_ERR("Can not set interrupt on CTS.");
+			dev_err(MAIN_DEV, "Can not set interrupt on CTS\n");
 			(void)set_tty_baud(tty, uart_info->baud_rate);
 			tty_unthrottle(tty);
-			SET_SLEEP_STATE(CHIP_AWAKE);
+			dev_dbg(MAIN_DEV, "New sleep_state: CHIP_AWAKE\n");
+			uart_info->sleep_state = CHIP_AWAKE;
 			goto error;
 		}
 
-		SET_SLEEP_STATE(CHIP_ASLEEP);
+		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_ASLEEP\n");
+		uart_info->sleep_state = CHIP_ASLEEP;
 		break;
 	case CHIP_AWAKE:
 
-		CG2900_DBG("Set break");
+		dev_dbg(MAIN_DEV, "sleep_timer_expired: Set break\n");
 		tty->ops->break_ctl(tty, TTY_BREAK_ON);
 
-		SET_SLEEP_STATE(CHIP_FALLING_ASLEEP);
+		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_FALLING_ASLEEP\n");
+		uart_info->sleep_state = CHIP_FALLING_ASLEEP;
 		goto run_timer;
 
 	case CHIP_POWERED_DOWN:
 	case CHIP_SUSPENDED:
 	case CHIP_ASLEEP: /* Fallthrough. */
 	default:
-		CG2900_DBG("Chip sleeps, is suspended or powered down.");
+		dev_dbg(MAIN_DEV,
+			"Chip sleeps, is suspended or powered down\n");
 		break;
 	}
 
@@ -563,7 +538,7 @@ run_timer:
 	return;
 error:
 	/* Disable sleep mode.*/
-	CG2900_ERR("Disable sleep mode.");
+	dev_err(MAIN_DEV, "Disable sleep mode\n");
 	uart_info->sleep_allowed = false;
 	uart_info->fd = NULL;
 	mutex_unlock(&(uart_info->sleep_state_lock));
@@ -593,7 +568,8 @@ static int cg2900_uart_suspend(struct platform_device *pdev, pm_message_t state)
 
 	if (CHIP_AWAKE == uart_info->sleep_state) {
 		uart_info->tty->ops->break_ctl(uart_info->tty, TTY_BREAK_ON);
-		SET_SLEEP_STATE(CHIP_FALLING_ASLEEP);
+		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_FALLING_ASLEEP\n");
+		uart_info->sleep_state = CHIP_FALLING_ASLEEP;
 		msleep(10);
 	}
 
@@ -606,14 +582,16 @@ static int cg2900_uart_suspend(struct platform_device *pdev, pm_message_t state)
 
 		err = set_cts_irq();
 		if (err < 0) {
-			CG2900_ERR("Can not suspend");
-			SET_SLEEP_STATE(CHIP_AWAKE);
+			dev_err(MAIN_DEV, "Can not suspend\n");
+			dev_dbg(MAIN_DEV, "New sleep_state: CHIP_AWAKE\n");
+			uart_info->sleep_state = CHIP_AWAKE;
 			return err;
 		}
 	}
 
 finished:
-	SET_SLEEP_STATE(CHIP_SUSPENDED);
+	dev_dbg(MAIN_DEV, "New sleep_state: CHIP_SUSPENDED\n");
+	uart_info->sleep_state = CHIP_SUSPENDED;
 	return 0;
 }
 
@@ -649,12 +627,12 @@ static int cg2900_enable_regulator(void)
 	/* Get and enable regulator. */
 	uart_info->regulator = regulator_get(uart_info->dev->parent, "gbf_1v8");
 	if (IS_ERR(uart_info->regulator)) {
-		CG2900_ERR("Not able to find regulator.");
+		dev_err(MAIN_DEV, "Not able to find regulator\n");
 		err = PTR_ERR(uart_info->regulator);
 	} else {
 		err = regulator_enable(uart_info->regulator);
 		if (err)
-			CG2900_ERR("Not able to enable regulator.");
+			dev_err(MAIN_DEV, "Not able to enable regulator\n");
 		else
 			uart_info->regulator_enabled = true;
 	}
@@ -691,38 +669,59 @@ static void cg2900_disable_regulator(void)
  */
 static bool is_set_baud_rate_cmd(const char *data)
 {
-	bool cmd_match = false;
+	struct hci_command_hdr *cmd;
 
-	if ((data[0] == HCI_BT_CMD_H4_CHANNEL) &&
-	    (data[1] == SET_BAUD_RATE_LSB) &&
-	    (data[2] == SET_BAUD_RATE_MSB) &&
-	    (data[3] == SET_BAUD_RATE_PAYL_LEN)) {
-		cmd_match = true;
-	}
-	return cmd_match;
+	if (data[0] != HCI_BT_CMD_H4_CHANNEL)
+		return false;
+
+	cmd = (struct hci_command_hdr *)&data[1];
+	if (le16_to_cpu(cmd->opcode) == CG2900_BT_OP_VS_SET_BAUD_RATE &&
+	    cmd->plen == BT_PARAM_LEN(sizeof(struct bt_vs_set_baud_rate_cmd)))
+		return true;
+
+	return false;
 }
 
 /**
  * is_bt_cmd_complete_no_param() - Checks if data contains command complete event for a certain command.
  * @skb:	sk_buffer containing the data including H:4 header.
- * @cmd_lsb:	Command LSB.
- * @cmd_msb:	Command MSB.
+ * @opcode:	Command op code.
+ * @status:	Command status.
  *
  * Returns:
  *   true - If this is the command complete we were looking for;
  *   false - otherwise.
  */
-static bool is_bt_cmd_complete_no_param(struct sk_buff *skb, u8 cmd_lsb,
-					u8 cmd_msb)
+static bool is_bt_cmd_complete_no_param(struct sk_buff *skb, u16 opcode,
+					u8 *status)
 {
-	if ((HCI_BT_EVT_H4_CHANNEL == skb->data[0]) &&
-	    (HCI_BT_EVT_CMD_COMPLETE == skb->data[1]) &&
-	    (HCI_BT_CMD_COMPLETE_NO_PARAM_LEN == skb->data[2]) &&
-	    (cmd_lsb == skb->data[4]) &&
-	    (cmd_msb == skb->data[5]))
-		return true;
+	struct hci_event_hdr *event;
+	struct hci_ev_cmd_complete *complete;
+	u8 *data = &(skb->data[0]);
 
-	return false;
+	if (HCI_BT_EVT_H4_CHANNEL != *data)
+		return false;
+
+	data += HCI_H4_SIZE;
+	event = (struct hci_event_hdr *)data;
+	if (HCI_EV_CMD_COMPLETE != event->evt ||
+	    HCI_BT_CMD_COMPLETE_LEN != event->plen)
+		return false;
+
+	data += sizeof(*event);
+	complete = (struct hci_ev_cmd_complete *)data;
+	if (opcode != le16_to_cpu(complete->opcode))
+		return false;
+
+	if (status) {
+		/*
+		 * All command complete have the status field at first byte of
+		 * packet data.
+		 */
+		data += sizeof(*complete);
+		*status = *data;
+	}
+	return true;
 }
 
 /**
@@ -766,10 +765,13 @@ static void finish_setting_baud_rate(struct tty_struct *tty)
 	 * the old termios.
 	 */
 	if (set_tty_baud(tty, uart_info->baud_rate)) {
-		CG2900_DBG("Setting termios to new baud rate");
-		SET_BAUD_STATE(BAUD_WAITING);
-	} else
-		SET_BAUD_STATE(BAUD_IDLE);
+		dev_dbg(MAIN_DEV, "Setting termios to new baud rate\n");
+		dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_WAITING\n");
+		uart_info->baud_rate_state = BAUD_WAITING;
+	} else {
+		dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_IDLE\n");
+		uart_info->baud_rate_state = BAUD_IDLE;
+	}
 
 	tty_unthrottle(tty);
 }
@@ -786,54 +788,56 @@ static void finish_setting_baud_rate(struct tty_struct *tty)
 static struct sk_buff *alloc_set_baud_rate_cmd(int *baud)
 {
 	struct sk_buff *skb;
-	u8 data[SET_BAUD_RATE_LEN];
 	u8 *h4;
+	struct bt_vs_set_baud_rate_cmd *cmd;
 
-	skb = cg2900_alloc_skb(SET_BAUD_RATE_LEN, GFP_ATOMIC);
+	skb = cg2900_alloc_skb(sizeof(*cmd), GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Failed to alloc skb!");
+		dev_err(MAIN_DEV,
+			"alloc_set_baud_rate_cmd: Failed to alloc skb\n");
 		return NULL;
 	}
 
+	cmd = (struct bt_vs_set_baud_rate_cmd *)skb_put(skb, sizeof(cmd));
+
 	/* Create the Hci_Cmd_ST_Set_Uart_Baud_Rate packet */
-	data[0] = SET_BAUD_RATE_LSB;
-	data[1] = SET_BAUD_RATE_MSB;
-	data[2] = SET_BAUD_RATE_PAYL_LEN;
+	cmd->opcode = cpu_to_le16(CG2900_BT_OP_VS_SET_BAUD_RATE);
+	cmd->plen = BT_PARAM_LEN(sizeof(cmd));
 
 	switch (*baud) {
 	case 57600:
-		data[3] = BAUD_RATE_57600;
+		cmd->baud_rate = CG2900_BAUD_RATE_57600;
 		break;
 	case 115200:
-		data[3] = BAUD_RATE_115200;
+		cmd->baud_rate = CG2900_BAUD_RATE_115200;
 		break;
 	case 230400:
-		data[3] = BAUD_RATE_230400;
+		cmd->baud_rate = CG2900_BAUD_RATE_230400;
 		break;
 	case 460800:
-		data[3] = BAUD_RATE_460800;
+		cmd->baud_rate = CG2900_BAUD_RATE_460800;
 		break;
 	case 921600:
-		data[3] = BAUD_RATE_921600;
+		cmd->baud_rate = CG2900_BAUD_RATE_921600;
 		break;
 	case 2000000:
-		data[3] = BAUD_RATE_2000000;
+		cmd->baud_rate = CG2900_BAUD_RATE_2000000;
 		break;
 	case 3000000:
-		data[3] = BAUD_RATE_3000000;
+		cmd->baud_rate = CG2900_BAUD_RATE_3000000;
 		break;
 	case 4000000:
-		data[3] = BAUD_RATE_4000000;
+		cmd->baud_rate = CG2900_BAUD_RATE_4000000;
 		break;
 	default:
-		CG2900_ERR("Invalid speed requested (%d), using 115200 bps "
-			   "instead\n", *baud);
-		data[3] = BAUD_RATE_115200;
+		dev_err(MAIN_DEV,
+			"Invalid speed requested (%d), using 115200 bps "
+			"instead\n", *baud);
+		cmd->baud_rate = CG2900_BAUD_RATE_115200;
 		*baud = 115200;
 		break;
 	};
 
-	memcpy(skb_put(skb, SET_BAUD_RATE_LEN), data, SET_BAUD_RATE_LEN);
 	h4 = skb_push(skb, HCI_H4_SIZE);
 	*h4 = HCI_BT_CMD_H4_CHANNEL;
 
@@ -849,22 +853,15 @@ static void work_do_transmit(struct work_struct *work)
 {
 	struct sk_buff *skb;
 	struct tty_struct *tty;
-	struct uart_work_struct *current_work;
-
-	if (!work) {
-		CG2900_ERR("work == NULL");
-		return;
-	}
 
 	/* Restart timer. */
 	update_timer();
 
-	current_work = container_of(work, struct uart_work_struct, work);
-
 	if (uart_info->tty)
 		tty = uart_info->tty;
 	else {
-		CG2900_ERR("Important structs not allocated!");
+		dev_err(MAIN_DEV,
+			"work_do_transmit: uart_info->tty not allocated\n");
 		goto finished;
 	}
 
@@ -881,8 +878,9 @@ static void work_do_transmit(struct work_struct *work)
 		 */
 		set_bit(TTY_DO_WRITE_WAKEUP, &tty->flags);
 		len = tty->ops->write(tty, skb->data, skb->len);
-		CG2900_INFO("Written %d bytes to UART of %d bytes in packet",
-			    len, skb->len);
+		dev_dbg(MAIN_DEV,
+			"Written %d bytes to UART of %d bytes in packet",
+			len, skb->len);
 
 		/*
 		 * If it's set baud rate cmd set correct baud state and after
@@ -891,8 +889,10 @@ static void work_do_transmit(struct work_struct *work)
 		 */
 		if ((BAUD_START == uart_info->baud_rate_state) &&
 		    (is_set_baud_rate_cmd(skb->data))) {
-			CG2900_INFO("UART set baud rate cmd found.");
-			SET_BAUD_STATE(BAUD_SENDING);
+			dev_dbg(MAIN_DEV, "UART set baud rate cmd found\n");
+			dev_dbg(MAIN_DEV,
+				"New baud_rate_state: BAUD_SENDING\n");
+			uart_info->baud_rate_state = BAUD_SENDING;
 		}
 
 		/* Remove the bytes written from the sk_buffer */
@@ -923,7 +923,7 @@ static void work_do_transmit(struct work_struct *work)
 	mutex_unlock(&uart_info->tx_mutex);
 
 finished:
-	kfree(current_work);
+	kfree(work);
 }
 
 /**
@@ -932,15 +932,7 @@ finished:
  */
 static void work_hw_deregistered(struct work_struct *work)
 {
-	struct uart_work_struct *current_work;
 	int err;
-
-	if (!work) {
-		CG2900_ERR("work == NULL");
-		return;
-	}
-
-	current_work = container_of(work, struct uart_work_struct, work);
 
 	/* Purge any stored sk_buffers */
 	skb_queue_purge(&uart_info->tx_queue);
@@ -951,9 +943,10 @@ static void work_hw_deregistered(struct work_struct *work)
 
 	err = cg2900_deregister_trans_driver();
 	if (err)
-		CG2900_ERR("Could not deregister UART from Core (%d)", err);
+		dev_err(MAIN_DEV, "Could not deregister UART from Core (%d)\n",
+			err);
 
-	kfree(current_work);
+	kfree(work);
 }
 
 /**
@@ -971,27 +964,29 @@ static void work_hw_deregistered(struct work_struct *work)
  *   -EFAULT if one or more of the UART related structs is not allocated.
  *   -ENOMEM if skb allocation has failed.
  *   -EPERM if setting the new baud rate has failed.
- *   Error codes generated by create_work_item.
+ *   Errors from create_work_item.
  */
 static int set_baud_rate(int baud)
 {
 	struct tty_struct *tty = NULL;
-	int err = 0;
+	int err;
 	struct sk_buff *skb;
 	int old_baud_rate;
 
-	CG2900_INFO("set_baud_rate (%d baud)", baud);
+	dev_dbg(MAIN_DEV, "set_baud_rate (%d baud)\n", baud);
 
 	if (uart_info->baud_rate_state != BAUD_IDLE) {
-		CG2900_ERR("Trying to set new baud rate before old setting "
-			   "is finished");
+		dev_err(MAIN_DEV,
+			"Trying to set new baud rate before old setting "
+			   "is finished\n");
 		return -EALREADY;
 	}
 
 	if (uart_info->tty)
 		tty = uart_info->tty;
 	else {
-		CG2900_ERR("Important structs not allocated!");
+		dev_err(MAIN_DEV,
+			"set_baud_rate: uart_info->tty not allocated\n");
 		return -EFAULT;
 	}
 
@@ -1005,29 +1000,31 @@ static int set_baud_rate(int baud)
 
 	skb = alloc_set_baud_rate_cmd(&baud);
 	if (!skb) {
-		CG2900_ERR("alloc_set_baud_rate_cmd failed");
+		dev_err(MAIN_DEV, "alloc_set_baud_rate_cmd failed\n");
 		return -ENOMEM;
 	}
 
-	SET_BAUD_STATE(BAUD_START);
+	dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_START\n");
+	uart_info->baud_rate_state = BAUD_START;
 	uart_info->baud_rate = baud;
 
 	/* Queue the sk_buffer... */
 	skb_queue_tail(&uart_info->tx_queue, skb);
 
 	/* ... and call the common UART TX function */
-	err = create_work_item(uart_info->wq, work_do_transmit, NULL);
+	err = create_work_item(work_do_transmit);
 	if (err) {
-		CG2900_ERR("Failed to send change baud rate cmd, freeing "
-			   "skb.");
+		dev_err(MAIN_DEV,
+			"Failed to send change baud rate cmd, freeing skb\n");
 		skb = skb_dequeue_tail(&uart_info->tx_queue);
-		SET_BAUD_STATE(BAUD_IDLE);
+		dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_IDLE\n");
+		uart_info->baud_rate_state = BAUD_IDLE;
 		uart_info->baud_rate = old_baud_rate;
 		kfree_skb(skb);
 		return err;
 	}
 
-	CG2900_DBG("Set baud rate cmd scheduled for sending.");
+	dev_dbg(MAIN_DEV, "Set baud rate cmd scheduled for sending\n");
 
 	/*
 	 * Now wait for the command complete.
@@ -1038,21 +1035,22 @@ static int set_baud_rate(int baud)
 				 (BAUD_FAIL    == uart_info->baud_rate_state)),
 				 msecs_to_jiffies(UART_RESP_TIMEOUT));
 	if (BAUD_SUCCESS == uart_info->baud_rate_state)
-		CG2900_DBG("Baudrate changed to %d baud", baud);
+		dev_info(MAIN_DEV, "Baud rate changed to %d baud\n", baud);
 	else {
-		CG2900_ERR("Failed to set new baudrate (%d)",
-			   uart_info->baud_rate_state);
+		dev_err(MAIN_DEV, "Failed to set new baud rate (%d)\n",
+			uart_info->baud_rate_state);
 		err = -EPERM;
 	}
 
 	/* Finally flush the TTY so we are sure that is no bad data there */
 	if (tty->ops->flush_buffer) {
-		CG2900_DBG("Flushing TTY after baud rate change");
+		dev_dbg(MAIN_DEV, "Flushing TTY after baud rate change\n");
 		tty->ops->flush_buffer(tty);
 	}
 
 	/* Finished. Set state to IDLE */
-	SET_BAUD_STATE(BAUD_IDLE);
+	dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_IDLE\n");
+	uart_info->baud_rate_state = BAUD_IDLE;
 
 	return err;
 }
@@ -1065,10 +1063,12 @@ static int set_baud_rate(int baud)
  *   0 if there is no error,
  *   -EACCES if write to transport failed,
  *   -EIO if chip did not answer to commands.
+ *   Errors from set_baud_rate.
  */
 static int uart_open(struct cg2900_trans_dev *dev)
 {
-	u8 data[HCI_BT_RESET_LEN + HCI_H4_SIZE];
+	u8 data[sizeof(struct hci_command_hdr) + HCI_H4_SIZE];
+	struct hci_command_hdr *cmd;
 	struct tty_struct *tty;
 	int bytes_written;
 
@@ -1082,19 +1082,20 @@ static int uart_open(struct cg2900_trans_dev *dev)
 	 * Create the Hci_Reset packet
 	 */
 	data[0] = HCI_BT_CMD_H4_CHANNEL;
-	data[1] = HCI_BT_RESET_CMD_LSB;
-	data[2] = HCI_BT_RESET_CMD_MSB;
-	data[3] = HCI_BT_RESET_PARAM_LEN;
+	cmd = (struct hci_command_hdr *)&data[1];
+	cmd->opcode = cpu_to_le16(HCI_OP_RESET);
+	cmd->plen = 0; /* No parameters for HCI reset */
 
 	/* Get the TTY info and send the packet */
 	tty = uart_info->tty;
-	SET_BAUD_STATE(BAUD_SENDING_RESET);
-	CG2900_DBG("Sending HCI reset before baud rate change");
-	bytes_written = tty->ops->write(tty, data,
-					HCI_BT_RESET_LEN + HCI_H4_SIZE);
-	if (bytes_written != HCI_BT_RESET_LEN + HCI_H4_SIZE) {
-		CG2900_ERR("Only wrote %d bytes", bytes_written);
-		SET_BAUD_STATE(BAUD_IDLE);
+	dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_SENDING_RESET\n");
+	uart_info->baud_rate_state = BAUD_SENDING_RESET;
+	dev_dbg(MAIN_DEV, "Sending HCI reset before baud rate change\n");
+	bytes_written = tty->ops->write(tty, data, sizeof(data));
+	if (bytes_written != sizeof(data)) {
+		dev_err(MAIN_DEV, "Only wrote %d bytes\n", bytes_written);
+		dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_IDLE\n");
+		uart_info->baud_rate_state = BAUD_IDLE;
 		return -EACCES;
 	}
 
@@ -1106,8 +1107,9 @@ static int uart_open(struct cg2900_trans_dev *dev)
 					BAUD_IDLE == uart_info->baud_rate_state,
 					msecs_to_jiffies(UART_RESP_TIMEOUT));
 	if (BAUD_IDLE != uart_info->baud_rate_state) {
-		CG2900_ERR("Failed to send HCI Reset");
-		SET_BAUD_STATE(BAUD_IDLE);
+		dev_err(MAIN_DEV, "Failed to send HCI Reset\n");
+		dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_IDLE\n");
+		uart_info->baud_rate_state = BAUD_IDLE;
 		return -EIO;
 	}
 
@@ -1128,13 +1130,13 @@ static void uart_set_chip_power(bool chip_on)
 	struct tty_struct *tty;
 	struct cg2900_platform_data *pf_data;
 
-	CG2900_INFO("uart_set_chip_power: %s",
-		    (chip_on ? "ENABLE" : "DISABLE"));
+	dev_info(MAIN_DEV, "Set chip power: %s\n",
+		 (chip_on ? "ENABLE" : "DISABLE"));
 
 	if (uart_info->tty)
 		tty = uart_info->tty;
 	else {
-		CG2900_ERR("Important structs not allocated!");
+		dev_err(MAIN_DEV, "uart_set_chip_power: uart_info->tty\n");
 		return;
 	}
 
@@ -1145,12 +1147,15 @@ static void uart_set_chip_power(bool chip_on)
 			return;
 		if (pf_data->enable_chip) {
 			pf_data->enable_chip();
-			SET_SLEEP_STATE(CHIP_AWAKE);
+			dev_dbg(MAIN_DEV, "New sleep_state: CHIP_AWAKE\n");
+			uart_info->sleep_state = CHIP_AWAKE;
 		}
 	} else {
 		if (pf_data->disable_chip) {
 			pf_data->disable_chip();
-			SET_SLEEP_STATE(CHIP_POWERED_DOWN);
+			dev_dbg(MAIN_DEV,
+				"New sleep_state: CHIP_POWERED_DOWN\n");
+			uart_info->sleep_state = CHIP_POWERED_DOWN;
 		}
 
 		cg2900_disable_regulator();
@@ -1207,18 +1212,23 @@ static int uart_write(struct cg2900_trans_dev *dev, struct sk_buff *skb)
 	/* Delete sleep timer. */
 	(void)del_timer(&uart_info->timer);
 
-	CG2900_DBG_DATA_CONTENT("uart_write", skb->data, skb->len);
+	if (uart_debug)
+		print_hex_dump_bytes(NAME " TX:\t", DUMP_PREFIX_NONE,
+				     skb->data, skb->len);
 
 	/* Queue the sk_buffer... */
 	skb_queue_tail(&uart_info->tx_queue, skb);
 
 	/* ...and start TX operation */
-	err = create_work_item(uart_info->wq, work_do_transmit, NULL);
-	if (err)
-		CG2900_ERR("Failed to create work item (%d) uart_tty_wakeup",
-			   err);
+	err = create_work_item(work_do_transmit);
+	if (err) {
+		dev_err(MAIN_DEV,
+			"Failed to create work item (%d) uart_tty_wakeup\n",
+			err);
+		return err;
+	}
 
-	return err;
+	return 0;
 }
 
 /**
@@ -1235,7 +1245,7 @@ static void send_skb_to_core(struct sk_buff *skb)
 	u8 status;
 
 	if (!skb) {
-		CG2900_ERR("Received NULL as skb");
+		dev_err(MAIN_DEV, "send_skb_to_core: Received NULL as skb\n");
 		return;
 	}
 
@@ -1245,14 +1255,14 @@ static void send_skb_to_core(struct sk_buff *skb)
 		 * the CmdComplete for the SetBaudrate command
 		 * Let's see if this is the packet we are waiting for.
 		 */
-		if (!is_bt_cmd_complete_no_param(skb, SET_BAUD_RATE_LSB,
-						 SET_BAUD_RATE_MSB)) {
+		if (!is_bt_cmd_complete_no_param(skb,
+				CG2900_BT_OP_VS_SET_BAUD_RATE, &status)) {
 			/*
 			 * Received other event. Should not really happen,
 			 * but pass the data to CG2900 Core anyway.
 			 */
-			CG2900_DBG_DATA("Sending packet to CG2900 Core while "
-					"waiting for CmdComplete");
+			dev_dbg(MAIN_DEV, "Sending packet to CG2900 Core while "
+				"waiting for BaudRate CmdComplete\n");
 			cg2900_data_from_chip(skb);
 			return;
 		}
@@ -1261,16 +1271,18 @@ static void send_skb_to_core(struct sk_buff *skb)
 		 * We have received complete event for our baud rate
 		 * change command
 		 */
-		status = skb->data[HCI_BT_EVT_CMD_COMPL_STATUS_POS +
-				   HCI_H4_SIZE];
 		if (HCI_BT_ERROR_NO_ERROR == status) {
-			CG2900_DBG("Received baud rate change complete "
-				   "event OK");
-			SET_BAUD_STATE(BAUD_SUCCESS);
+			dev_dbg(MAIN_DEV, "Received baud rate change complete "
+				"event OK\n");
+			dev_dbg(MAIN_DEV,
+				"New baud_rate_state: BAUD_SUCCESS\n");
+			uart_info->baud_rate_state = BAUD_SUCCESS;
 		} else {
-			CG2900_ERR("Received baud rate change complete event "
-				   "with status 0x%X", status);
-			SET_BAUD_STATE(BAUD_FAIL);
+			dev_err(MAIN_DEV,
+				"Received baud rate change complete event "
+				"with status 0x%X\n", status);
+			dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_FAIL\n");
+			uart_info->baud_rate_state = BAUD_FAIL;
 		}
 		wake_up_interruptible(&uart_wait_queue);
 		kfree_skb(skb);
@@ -1280,14 +1292,13 @@ static void send_skb_to_core(struct sk_buff *skb)
 		 * the CmdComplete for the Reset command
 		 * Let's see if this is the packet we are waiting for.
 		 */
-		if (!is_bt_cmd_complete_no_param(skb, HCI_BT_RESET_CMD_LSB,
-						 HCI_BT_RESET_CMD_MSB)) {
+		if (!is_bt_cmd_complete_no_param(skb, HCI_OP_RESET, &status)) {
 			/*
 			 * Received other event. Should not really happen,
 			 * but pass the data to CG2900 Core anyway.
 			 */
-			CG2900_DBG_DATA("Sending packet to CG2900 Core while "
-					"waiting for CmdComplete");
+			dev_dbg(MAIN_DEV, "Sending packet to CG2900 Core while "
+				"waiting for Reset CmdComplete\n");
 			cg2900_data_from_chip(skb);
 			return;
 		}
@@ -1296,20 +1307,22 @@ static void send_skb_to_core(struct sk_buff *skb)
 		 * We have received complete event for our baud rate
 		 * change command
 		 */
-		status = skb->data[HCI_BT_EVT_CMD_COMPL_STATUS_POS +
-				   HCI_H4_SIZE];
 		if (HCI_BT_ERROR_NO_ERROR == status) {
-			CG2900_DBG("Received HCI reset complete event OK");
+			dev_dbg(MAIN_DEV,
+				"Received HCI reset complete event OK\n");
 			/*
 			 * Go back to BAUD_IDLE since this was not really
 			 * baud rate change but just a preparation of the chip
 			 * to be ready to receive commands.
 			 */
-			SET_BAUD_STATE(BAUD_IDLE);
+			dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_IDLE\n");
+			uart_info->baud_rate_state = BAUD_IDLE;
 		} else {
-			CG2900_ERR("Received HCI reset complete event with "
-				   "status 0x%X", status);
-			SET_BAUD_STATE(BAUD_FAIL);
+			dev_err(MAIN_DEV,
+				"Received HCI reset complete event with "
+				"status 0x%X", status);
+			dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_FAIL\n");
+			uart_info->baud_rate_state = BAUD_FAIL;
 		}
 		wake_up_interruptible(&uart_wait_queue);
 		kfree_skb(skb);
@@ -1340,7 +1353,8 @@ static void check_data_len(int len)
 		/* No data left to receive. Transmit to CG2900 Core */
 		send_skb_to_core(uart_info->rx_skb);
 	} else if (len > room) {
-		CG2900_ERR("Data length is too large (%d > %d)", len, room);
+		dev_err(MAIN_DEV, "Data length is too large (%d > %d)\n",
+			len, room);
 		kfree_skb(uart_info->rx_skb);
 	} else {
 		/*
@@ -1443,8 +1457,9 @@ static int uart_receive_skb(const u8 *data, int count)
 			continue;
 
 		default:
-			CG2900_ERR("Bad state indicating memory overwrite "
-				   "(0x%X)", (u8)(uart_info->rx_state));
+			dev_err(MAIN_DEV,
+				"Bad state indicating memory overwrite "
+				"(0x%X)\n", (u8)(uart_info->rx_state));
 			break;
 		}
 
@@ -1463,7 +1478,8 @@ check_h4_header:
 			uart_info->rx_state = W4_GNSS_HDR;
 			uart_info->rx_count = HCI_GNSS_HDR_SIZE;
 		} else {
-			CG2900_ERR("Unknown HCI packet type 0x%X", (u8)*r_ptr);
+			dev_err(MAIN_DEV, "Unknown HCI packet type 0x%X\n",
+				(u8)*r_ptr);
 			r_ptr++;
 			count--;
 			continue;
@@ -1475,7 +1491,8 @@ check_h4_header:
 		 */
 		uart_info->rx_skb = alloc_rx_skb(RX_SKB_MAX_SIZE, GFP_ATOMIC);
 		if (!uart_info->rx_skb) {
-			CG2900_ERR("Can't allocate memory for new packet");
+			dev_err(MAIN_DEV,
+				"Can't allocate memory for new packet\n");
 			uart_info->rx_state = W4_PACKET_TYPE;
 			uart_info->rx_count = 0;
 			return 0;
@@ -1505,7 +1522,13 @@ static int uart_tty_open(struct tty_struct *tty)
 {
 	int err;
 
-	CG2900_INFO("uart_tty_open");
+	dev_info(MAIN_DEV, "UART opened\n");
+
+	/* We require device to support Write operation */
+	if (!tty->ops->write) {
+		dev_err(MAIN_DEV, "UART does not support write\n");
+		return -EPERM;
+	}
 
 	/* Set the structure pointers and set the UART receive room */
 	uart_info->tty = tty;
@@ -1525,12 +1548,15 @@ static int uart_tty_open(struct tty_struct *tty)
 	/* Tell CG2900 Core that UART is connected */
 	err = cg2900_register_trans_driver(&uart_cb, NULL);
 	if (err)
-		CG2900_ERR("Could not register transport driver (%d)", err);
+		dev_err(MAIN_DEV, "Could not register transport driver (%d)\n",
+			err);
 
 	if (tty->ops->tiocmget && tty->ops->break_ctl)
 		uart_info->sleep_allowed = true;
-	else
-		CG2900_ERR("Sleep mode not available.");
+	else {
+		dev_err(MAIN_DEV, "Sleep mode not available\n");
+		uart_info->sleep_allowed = false;
+	}
 
 	return err;
 
@@ -1547,15 +1573,15 @@ static void uart_tty_close(struct tty_struct *tty)
 {
 	int err;
 
-	CG2900_INFO("uart_tty_close");
-
 	BUG_ON(!uart_info);
 	BUG_ON(!uart_info->wq);
 
-	err = create_work_item(uart_info->wq, work_hw_deregistered, NULL);
+	dev_info(MAIN_DEV, "UART closed\n");
+
+	err = create_work_item(work_hw_deregistered);
 	if (err)
-		CG2900_ERR("Failed to create work item (%d) "
-			   "work_hw_deregistered", err);
+		dev_err(MAIN_DEV, "Failed to create work item (%d) "
+			"work_hw_deregistered\n", err);
 }
 
 /**
@@ -1569,7 +1595,7 @@ static void uart_tty_wakeup(struct tty_struct *tty)
 {
 	int err;
 
-	CG2900_INFO("uart_tty_wakeup");
+	dev_dbg(MAIN_DEV, "uart_tty_wakeup\n");
 
 	/*
 	 * Clear the TTY_DO_WRITE_WAKEUP bit that is set in
@@ -1584,10 +1610,11 @@ static void uart_tty_wakeup(struct tty_struct *tty)
 	(void)del_timer(&uart_info->timer);
 
 	/* Start TX operation */
-	err = create_work_item(uart_info->wq, work_do_transmit, NULL);
+	err = create_work_item(work_do_transmit);
 	if (err)
-		CG2900_ERR("Failed to create work item (%d) uart_tty_wakeup",
-			   err);
+		dev_err(MAIN_DEV,
+			"Failed to create work item (%d) uart_tty_wakeup\n",
+			err);
 }
 
 /**
@@ -1600,14 +1627,18 @@ static void uart_tty_wakeup(struct tty_struct *tty)
 static void uart_tty_receive(struct tty_struct *tty, const u8 *data,
 			     char *flags, int count)
 {
-	CG2900_INFO("uart_tty_receive");
+	dev_dbg(MAIN_DEV, "uart_tty_receive\n");
 
 	if (tty != uart_info->tty)
 		return;
 
-	CG2900_DBG_DATA("Received data with length = %d and first byte 0x%02X",
-			count, data[0]);
-	CG2900_DBG_DATA_CONTENT("uart_tty_receive", data, count);
+	dev_dbg(MAIN_DEV,
+		"Received data with length = %d and first byte 0x%02X\n",
+		count, data[0]);
+
+	if (uart_debug)
+		print_hex_dump_bytes(NAME " RX:\t", DUMP_PREFIX_NONE,
+				     data, count);
 
 	/* Restart data timer */
 	update_timer();
@@ -1634,9 +1665,9 @@ static int uart_tty_ioctl(struct tty_struct *tty, struct file *file,
 {
 	int err = 0;
 
-	CG2900_INFO("uart_tty_ioctl cmd %d", cmd);
-	CG2900_DBG("DIR: %d, TYPE: %d, NR: %d, SIZE: %d", _IOC_DIR(cmd),
-		   _IOC_TYPE(cmd), _IOC_NR(cmd), _IOC_SIZE(cmd));
+	dev_dbg(MAIN_DEV,
+		"uart_tty_ioctl DIR: %d, TYPE: %d, NR: %d, SIZE: %d\n",
+		_IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd), _IOC_SIZE(cmd));
 
 
 
@@ -1646,8 +1677,9 @@ static int uart_tty_ioctl(struct tty_struct *tty, struct file *file,
 		if (!uart_info->fd)
 			uart_info->fd = file;
 		else
-			CG2900_DBG("Cannot store file object to device.");
+			dev_err(MAIN_DEV, "File descriptor already set\n");
 		break;
+
 	case HCIUARTSETPROTO: /* Fallthrough */
 	case HCIUARTGETPROTO:
 	case HCIUARTGETDEVICE:
@@ -1671,14 +1703,14 @@ static int uart_tty_ioctl(struct tty_struct *tty, struct file *file,
 static ssize_t uart_tty_read(struct tty_struct *tty, struct file *file,
 			     unsigned char __user *buf, size_t nr)
 {
-	CG2900_INFO("uart_tty_read");
+	dev_dbg(MAIN_DEV, "uart_tty_read\n");
 	return 0;
 }
 
 static ssize_t uart_tty_write(struct tty_struct *tty, struct file *file,
 			      const unsigned char *data, size_t count)
 {
-	CG2900_INFO("uart_tty_write");
+	dev_dbg(MAIN_DEV, "uart_tty_write\n");
 	return count;
 }
 
@@ -1721,14 +1753,15 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 {
 	int err = 0;
 
-	CG2900_INFO("cg2900_uart_probe");
+	pr_debug("cg2900_uart_probe");
 
 	uart_info = kzalloc(sizeof(*uart_info), GFP_KERNEL);
 	if (!uart_info) {
-		CG2900_ERR("Couldn't allocate uart_info");
+		pr_err("Couldn't allocate uart_info");
 		return -ENOMEM;
 	}
 
+	uart_info->dev = &pdev->dev;
 	uart_info->sleep_state = CHIP_POWERED_DOWN;
 	skb_queue_head_init(&uart_info->tx_queue);
 	mutex_init(&uart_info->tx_mutex);
@@ -1738,10 +1771,11 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 	/* Init UART TX work queue */
 	uart_info->wq = create_singlethread_workqueue(UART_WQ_NAME);
 	if (!uart_info->wq) {
-		CG2900_ERR("Could not create workqueue");
+		dev_err(MAIN_DEV, "Could not create workqueue\n");
 		err = -ECHILD; /* No child processes */
 		goto error_handling_wq;
 	}
+
 	init_timer(&uart_info->timer);
 	uart_info->timer.function = sleep_timer_expired;
 	uart_info->timer.expires  = jiffies + cg2900_get_sleep_timeout();
@@ -1749,12 +1783,13 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 	/* Register the tty discipline. We will see what will be used. */
 	err = tty_register_ldisc(N_HCI, &uart_ldisc);
 	if (err) {
-		CG2900_ERR("HCI line discipline registration failed. (0x%X)",
-			   err);
+		dev_err(MAIN_DEV,
+			"HCI line discipline registration failed. (%d)\n",
+			err);
 		goto error_handling_register;
 	}
 
-	uart_info->dev = &pdev->dev;
+	dev_info(MAIN_DEV, "CG2900 UART started\n");
 
 	goto finished;
 
@@ -1780,18 +1815,20 @@ static int __devexit cg2900_uart_remove(struct platform_device *pdev)
 {
 	int err;
 
-	CG2900_INFO("cg2900_uart_remove");
+	pr_debug("cg2900_uart_remove");
 
 	/* Release tty registration of line discipline */
 	err = tty_unregister_ldisc(N_HCI);
 	if (err)
-		CG2900_ERR("Can't unregister HCI line discipline (%d)", err);
+		pr_err("Can't unregister HCI line discipline (%d)", err);
 
 	if (!uart_info)
 		return err;
 
 	destroy_workqueue(uart_info->wq);
 	mutex_destroy(&uart_info->tx_mutex);
+
+	dev_info(MAIN_DEV, "CG2900 UART removed\n");
 
 	kfree(uart_info);
 	uart_info = NULL;
@@ -1818,7 +1855,7 @@ static struct platform_driver cg2900_uart_driver = {
  */
 static int __init cg2900_uart_init(void)
 {
-	CG2900_INFO("cg2900_uart_init");
+	pr_debug("cg2900_uart_init");
 	return platform_driver_register(&cg2900_uart_driver);
 }
 
@@ -1829,7 +1866,7 @@ static int __init cg2900_uart_init(void)
  */
 static void __exit cg2900_uart_exit(void)
 {
-	CG2900_INFO("cg2900_uart_exit");
+	pr_debug("cg2900_uart_exit");
 	platform_driver_unregister(&cg2900_uart_driver);
 }
 
@@ -1845,6 +1882,9 @@ module_param(uart_high_baud, int, S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(uart_high_baud,
 		 "High speed UART baud rate, e.g. 4000000.  If not set 3000000 "
 		 "will be used.");
+
+module_param(uart_debug, int, S_IRUGO | S_IWUSR | S_IWGRP);
+MODULE_PARM_DESC(uart_debug, "Enable/Disable debug. 0 means Debug disabled.");
 
 MODULE_AUTHOR("Par-Gunnar Hjalmdahl ST-Ericsson");
 MODULE_LICENSE("GPL v2");

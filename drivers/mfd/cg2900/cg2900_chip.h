@@ -16,8 +16,6 @@
 #ifndef _CG2900_CHIP_H_
 #define _CG2900_CHIP_H_
 
-#include "hci_defines.h"
-
 /*
  *	Utility
  */
@@ -80,7 +78,7 @@ struct bt_vs_store_in_fs_cmd {
 	__u8	plen;
 	__u8	user_id;
 	__u8	len;
-	__u8	data; /* Really a data array of variable size */
+	__u8	data[];
 } __attribute__((packed));
 
 #define CG2900_VS_STORE_IN_FS_USR_ID_BD_ADDR		0xFE
@@ -91,7 +89,7 @@ struct bt_vs_write_file_block_cmd {
 	__le16	opcode;
 	__u8	plen;
 	__u8	id;
-	__u8	data; /* Really a data array of variable size */
+	__u8	data[];
 } __attribute__((packed));
 
 #define CG2900_BT_DISABLE				0x00
@@ -103,6 +101,24 @@ struct bt_vs_bt_enable_cmd {
 	__le16	op_code;
 	u8	plen;
 	u8	enable;
+} __attribute__((packed));
+
+/* Bytes in the command Hci_Cmd_ST_Set_Uart_Baud_Rate */
+#define CG2900_BAUD_RATE_57600				0x03
+#define CG2900_BAUD_RATE_115200				0x02
+#define CG2900_BAUD_RATE_230400				0x01
+#define CG2900_BAUD_RATE_460800				0x00
+#define CG2900_BAUD_RATE_921600				0x20
+#define CG2900_BAUD_RATE_2000000			0x25
+#define CG2900_BAUD_RATE_3000000			0x27
+#define CG2900_BAUD_RATE_4000000			0x2B
+
+/* BT VS SetBaudRate command */
+#define CG2900_BT_OP_VS_SET_BAUD_RATE			0xFC09
+struct bt_vs_set_baud_rate_cmd {
+	__le16	opcode;
+	__u8	plen;
+	__u8	baud_rate;
 } __attribute__((packed));
 
 /* Bluetooth Vendor Specific Opcodes */

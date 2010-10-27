@@ -12,6 +12,8 @@
  *
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson CG2900 GPS/BT/FM controller.
  */
+#define NAME					"cg2900_core"
+#define pr_fmt(fmt)				NAME ": " fmt "\n"
 
 #include <asm/byteorder.h>
 #include <linux/firmware.h>
@@ -40,23 +42,14 @@
 #include <net/bluetooth/hci.h>
 
 #include "cg2900_core.h"
-#include "cg2900_debug.h"
-#include "hci_defines.h"
+
+#define MAIN_DEV			(core_info->dev)
 
 /* Device names */
 #define CG2900_CDEV_NAME		"cg2900_core_test"
 #define CG2900_CLASS_NAME		"cg2900_class"
 #define CG2900_DEVICE_NAME		"cg2900_driver"
 #define CORE_WQ_NAME			"cg2900_core_wq"
-
-#define SET_MAIN_STATE(__core_new_state) \
-	CG2900_SET_STATE("main_state", core_info->main_state, \
-			 __core_new_state)
-#define SET_BOOT_STATE(__core_new_state) \
-	CG2900_SET_STATE("boot_state", core_info->boot_state, __core_new_state)
-#define SET_TRANSPORT_STATE(__core_new_state) \
-	CG2900_SET_STATE("transport_state", core_info->transport_state, \
-			 __core_new_state)
 
 #define LOGGER_DIRECTION_TX		0
 #define LOGGER_DIRECTION_RX		1
@@ -78,14 +71,6 @@
  * the parent device here in the transport so that is 33 devices in total.
  */
 #define MAX_NBR_OF_DEVS			33
-
-/* Default H4 channels which may change depending on connected controller */
-#define HCI_FM_RADIO_H4_CHANNEL		0x08
-#define HCI_GNSS_H4_CHANNEL		0x09
-
-/*
- *	Internal type definitions
- */
 
 /**
  * enum main_state - Main-state for CG2900 Core.
@@ -261,9 +246,6 @@ struct core_info {
 static struct core_info *core_info;
 
 /* Module parameters */
-int cg2900_debug_level = CG2900_DEFAULT_DEBUG_LEVEL;
-EXPORT_SYMBOL(cg2900_debug_level);
-
 u8 bd_address[] = {0x00, 0xBE, 0xAD, 0xDE, 0x80, 0x00};
 EXPORT_SYMBOL(bd_address);
 int bd_addr_count = BT_BDADDR_SIZE;
@@ -334,11 +316,11 @@ static void transmit_skb_to_chip(struct sk_buff *skb, bool use_logger)
 	struct trans_info *trans_info = core_info->trans_info;
 	struct cg2900_device *logger;
 
-	CG2900_DBG_DATA("transmit_skb_to_chip %d bytes. First byte 0x%02X",
+	dev_dbg(MAIN_DEV, "transmit_skb_to_chip %d bytes. First byte 0x%02X\n",
 			skb->len, *(skb->data));
 
 	if (TRANS_CLOSED == core_info->transport_state) {
-		CG2900_ERR("Trying to write on a closed channel");
+		dev_err(MAIN_DEV, "Trying to write on a closed channel\n");
 		kfree_skb(skb);
 		return;
 	}
@@ -357,7 +339,7 @@ static void transmit_skb_to_chip(struct sk_buff *skb, bool use_logger)
 	 */
 	skb_log = alloc_skb(skb->len + 1, GFP_ATOMIC);
 	if (!skb_log) {
-		CG2900_ERR("Couldn't allocate skb_log");
+		dev_err(MAIN_DEV, "Couldn't allocate skb_log\n");
 		goto transmit;
 	}
 
@@ -371,9 +353,9 @@ transmit:
 	if (trans_info && trans_info->cb.write) {
 		err = trans_info->cb.write(&trans_info->dev, skb);
 		if (err)
-			CG2900_ERR("Transport write failed (%d)", err);
+			dev_err(MAIN_DEV, "Transport write failed (%d)\n", err);
 	} else {
-		CG2900_ERR("No way to write to chip");
+		dev_err(MAIN_DEV, "No way to write to chip\n");
 		err = -EPERM;
 	}
 
@@ -395,8 +377,8 @@ static void create_and_send_bt_cmd(void *data, int length)
 
 	skb = cg2900_alloc_skb(length, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Couldn't allocate sk_buff with length %d",
-			     length);
+		dev_err(MAIN_DEV, "Couldn't allocate sk_buff with length %d\n",
+			length);
 		return;
 	}
 
@@ -419,15 +401,15 @@ static void chip_not_detected(void)
 	struct list_head *cursor;
 	struct chip_handler_item *tmp;
 
-	CG2900_ERR("Could not read out revision from the chip. This is "
-		   "typical when running stubbed CG2900.\n"
-		   "Switching to default value:\n"
-		   "\tman 0x%04X\n"
-		   "\trev 0x%04X\n"
-		   "\tsub 0x%04X",
-		   default_manufacturer,
-		   default_hci_revision,
-		   default_sub_version);
+	dev_err(MAIN_DEV, "Could not read out revision from the chip. This is "
+		"typical when running stubbed CG2900.\n"
+		"Switching to default value:\n"
+		"\tman 0x%04X\n"
+		"\trev 0x%04X\n"
+		"\tsub 0x%04X\n",
+		default_manufacturer,
+		default_hci_revision,
+		default_sub_version);
 
 	core_info->chip_dev.chip.manufacturer = default_manufacturer;
 	core_info->chip_dev.chip.hci_revision = default_hci_revision;
@@ -439,8 +421,9 @@ static void chip_not_detected(void)
 	list_for_each(cursor, &chip_handlers) {
 		tmp = list_entry(cursor, struct chip_handler_item, list);
 		if (tmp->cb.check_chip_support(&(core_info->chip_dev))) {
-			CG2900_INFO("Chip handler found");
-			SET_BOOT_STATE(BOOT_READY);
+			dev_dbg(MAIN_DEV, "Chip handler found\n");
+			dev_dbg(MAIN_DEV, "New boot_state: BOOT_READY\n");
+			core_info->boot_state = BOOT_READY;
 			break;
 		}
 	}
@@ -463,7 +446,8 @@ static int enable_hci_logger(struct sk_buff *skb)
 	struct cg2900_hci_logger_config	*config;
 
 	if (skb->len != sizeof(*config)) {
-		CG2900_ERR("Trying to configure HCI logger with bad structure");
+		dev_err(MAIN_DEV,
+			"Trying to configure HCI logger with bad structure\n");
 		return -EACCES;
 	}
 
@@ -510,8 +494,9 @@ static int find_bt_audio_user(int h4_channel, struct cg2900_device **dev,
 	    core_info->chip_dev.cb.is_bt_audio_user(h4_channel, skb)) {
 		*dev = core_info->users.bt_audio;
 		if (!(*dev)) {
-			CG2900_ERR("H:4 channel not registered in core_info: "
-				     "0x%X", h4_channel);
+			dev_err(MAIN_DEV,
+				"H:4 channel not registered in core_info: %d\n",
+				h4_channel);
 			return -ENXIO;
 		}
 	}
@@ -534,8 +519,9 @@ static int find_fm_audio_user(int h4_channel, struct cg2900_device **dev,
 	    core_info->chip_dev.cb.is_fm_audio_user(h4_channel, skb)) {
 		*dev = core_info->users.fm_radio_audio;
 		if (!(*dev)) {
-			CG2900_ERR("H:4 channel not registered in core_info: "
-				     "0x%X", h4_channel);
+			dev_err(MAIN_DEV,
+				"H:4 channel not registered in core_info: %d\n",
+				h4_channel);
 			return -ENXIO;
 		}
 	}
@@ -590,7 +576,7 @@ static int find_h4_user(int h4_channel, struct cg2900_device **dev,
 		*dev = users->core;
 	} else {
 		*dev = NULL;
-		CG2900_ERR("Bad H:4 channel supplied: 0x%X", h4_channel);
+		dev_err(MAIN_DEV, "Bad H:4 channel supplied: %d\n", h4_channel);
 		return -EINVAL;
 	}
 
@@ -617,7 +603,7 @@ static int add_h4_user(struct cg2900_device *dev, const char * const name)
 	struct cg2900_h4_channels *chan = &(core_info->h4_channels);
 
 	if (!dev) {
-		CG2900_ERR("NULL device supplied");
+		dev_err(MAIN_DEV, "add_h4_user: NULL device supplied\n");
 		return -EINVAL;
 	}
 
@@ -636,9 +622,12 @@ static int add_h4_user(struct cg2900_device *dev, const char * const name)
 			(users->nbr_of_users)++;
 		} else {
 			err = -EBUSY;
-			CG2900_ERR("name %s bt_cmd 0x%X  bt_audio 0x%X",
-				     name, (int)users->bt_cmd,
-				     (int)users->bt_audio);
+			dev_err(MAIN_DEV, "Cannot set device:\n"
+					"\tname %s\n"
+					"\tbt_cmd 0x%X\n"
+					"\tbt_audio 0x%X\n",
+				name, (int)users->bt_cmd,
+				(int)users->bt_audio);
 		}
 	} else if (dev->h4_channel == chan->bt_acl_channel) {
 		if (!users->bt_acl) {
@@ -681,6 +670,12 @@ static int add_h4_user(struct cg2900_device *dev, const char * const name)
 			(users->nbr_of_users)++;
 		} else {
 			err = -EBUSY;
+			dev_err(MAIN_DEV, "Cannot set device:\n"
+					"\tname %s\n"
+					"\tfm_radio 0x%X\n"
+					"\tfm_radio_audio 0x%X\n",
+				name, (int)users->fm_radio,
+				(int)users->fm_radio_audio);
 		}
 	} else if (dev->h4_channel == chan->debug_channel) {
 		if (!users->debug)
@@ -711,12 +706,13 @@ static int add_h4_user(struct cg2900_device *dev, const char * const name)
 		}
 	} else {
 		err = -EINVAL;
-		CG2900_ERR("Bad H:4 channel supplied: 0x%X", dev->h4_channel);
+		dev_err(MAIN_DEV, "Bad H:4 channel supplied: 0x%X\n",
+			dev->h4_channel);
 	}
 
 	if (err)
-		CG2900_ERR("H:4 channel 0x%X, not registered (%d)",
-			   dev->h4_channel, err);
+		dev_err(MAIN_DEV, "H:4 channel 0x%X not registered (%d)\n",
+			dev->h4_channel, err);
 
 	return err;
 }
@@ -738,15 +734,11 @@ static int remove_h4_user(struct cg2900_device **dev)
 	struct cg2900_chip_callbacks *cb = &(core_info->chip_dev.cb);
 
 	if (!dev || !(*dev)) {
-		CG2900_ERR("NULL device supplied");
+		dev_err(MAIN_DEV, "remove_h4_user: NULL device supplied\n");
 		return -EINVAL;
 	}
 
 	if ((*dev)->h4_channel == chan->bt_cmd_channel) {
-		CG2900_DBG("bt_cmd 0x%X bt_audio 0x%X dev 0x%X",
-			     (int)users->bt_cmd,
-			     (int)users->bt_audio, (int)*dev);
-
 		if (*dev == users->bt_cmd) {
 			users->bt_cmd = NULL;
 			(users->nbr_of_users)--;
@@ -755,10 +747,6 @@ static int remove_h4_user(struct cg2900_device **dev)
 			(users->nbr_of_users)--;
 		} else
 			err = -EINVAL;
-
-		CG2900_DBG("bt_cmd 0x%X bt_audio 0x%X dev 0x%X",
-			     (int)users->bt_cmd,
-			     (int)users->bt_audio, (int)*dev);
 
 		/*
 		 * If both BT Command channel users are de-registered we
@@ -836,13 +824,14 @@ static int remove_h4_user(struct cg2900_device **dev)
 		} else
 			err = -EINVAL;
 	} else {
-		CG2900_ERR("Bad H:4 channel supplied: 0x%X",
-			     (*dev)->h4_channel);
+		dev_err(MAIN_DEV, "Bad H:4 channel supplied: 0x%X\n",
+			(*dev)->h4_channel);
 		return -EINVAL;
 	}
 
 	if (err)
-		CG2900_ERR("Trying to remove device that was not registered");
+		dev_err(MAIN_DEV,
+			"Trying to remove device that was not registered\n");
 
 	/*
 	 * Free the device even if there is an error with the device.
@@ -860,10 +849,12 @@ static void chip_startup(void)
 {
 	struct hci_command_hdr cmd;
 
-	CG2900_INFO("chip_startup");
+	dev_dbg(MAIN_DEV, "chip_startup\n");
 
-	SET_MAIN_STATE(CORE_BOOTING);
-	SET_BOOT_STATE(BOOT_NOT_STARTED);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_BOOTING\n");
+	core_info->main_state = CORE_BOOTING;
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_NOT_STARTED\n");
+	core_info->boot_state = BOOT_NOT_STARTED;
 
 	/*
 	 * Transmit HCI reset command to ensure the chip is using
@@ -883,7 +874,7 @@ static void chip_shutdown(void)
 	struct trans_info *trans_info = core_info->trans_info;
 	struct cg2900_chip_callbacks *cb = &(core_info->chip_dev.cb);
 
-	CG2900_INFO("chip_shutdown");
+	dev_dbg(MAIN_DEV, "chip_shutdown\n");
 
 	/* First do a quick power switch of the chip to assure a good state */
 	if (trans_info && trans_info->cb.set_chip_power)
@@ -907,15 +898,16 @@ static void chip_shutdown(void)
 	 * Otherwise we are finished.
 	 */
 	if (!cb->chip_shutdown) {
-		CG2900_DBG("No registered handler. Finishing shutdown.");
-		cg2900_chip_shutdown_finished(err);
+		dev_dbg(MAIN_DEV,
+			"No registered handler. Finishing shutdown\n");
+		cg2900_chip_shutdown_finished(0);
 		return;
 	}
 
 	err = cb->chip_shutdown(&(core_info->chip_dev));
 	if (err) {
-		CG2900_ERR("chip_shutdown failed (%d). Finishing shutdown.",
-			   err);
+		dev_err(MAIN_DEV,
+			"chip_shutdown failed (%d). Finishing shutdown\n", err);
 		cg2900_chip_shutdown_finished(err);
 	}
 }
@@ -934,13 +926,17 @@ static bool handle_reset_cmd_complete_evt(u8 *data)
 	u8 status = data[0];
 	struct hci_command_hdr cmd;
 
-	CG2900_INFO("Received Reset complete event with status 0x%X", status);
+	dev_dbg(MAIN_DEV, "Received Reset complete event with status 0x%X\n",
+		status);
 
 	if ((core_info->main_state == CORE_BOOTING ||
 	     core_info->main_state == CORE_INITIALIZING) &&
 	    core_info->boot_state == BOOT_NOT_STARTED) {
 		/* Transmit HCI Read Local Version Information command */
-		SET_BOOT_STATE(BOOT_READ_LOCAL_VERSION_INFORMATION);
+		dev_dbg(MAIN_DEV,
+			"New boot_state: "
+			"BOOT_READ_LOCAL_VERSION_INFORMATION\n");
+		core_info->boot_state = BOOT_READ_LOCAL_VERSION_INFORMATION;
 		cmd.opcode = cpu_to_le16(HCI_OP_READ_LOCAL_VERSION);
 		cmd.plen = 0; /* No parameters for HCI reset */
 		create_and_send_bt_cmd(&cmd, sizeof(cmd));
@@ -982,9 +978,11 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 
 	/* We will handle the packet */
 	if (HCI_BT_ERROR_NO_ERROR != evt->status) {
-		CG2900_ERR("Received Read Local Version Information with "
-			     "status 0x%X", evt->status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Received Read Local Version Information with "
+			"status 0x%X\n", evt->status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		core_info->boot_state = BOOT_FAILED;
 		cg2900_reset(NULL);
 		return true;
 	}
@@ -997,15 +995,15 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 	chip->lmp_pal_version = evt->lmp_ver;
 	chip->manufacturer = le16_to_cpu(evt->manufacturer);
 	chip->lmp_pal_subversion = le16_to_cpu(evt->lmp_subver);
-	CG2900_DBG("Received Read Local Version Information with:\n"
-		   "\thci_version:  0x%X\n"
-		   "\thci_revision: 0x%X\n"
-		   "\tlmp_pal_version: 0x%X\n"
-		   "\tmanufacturer: 0x%X\n"
-		   "\tlmp_pal_subversion: 0x%X",
-		   chip->hci_version, chip->hci_revision,
-		   chip->lmp_pal_version, chip->manufacturer,
-		   chip->lmp_pal_subversion);
+	dev_info(MAIN_DEV, "Received Read Local Version Information with:\n"
+		 "\thci_version:  0x%02X\n"
+		 "\thci_revision: 0x%04X\n"
+		 "\tlmp_pal_version: 0x%02X\n"
+		 "\tmanufacturer: 0x%04X\n"
+		 "\tlmp_pal_subversion: 0x%04X\n",
+		 chip->hci_version, chip->hci_revision,
+		 chip->lmp_pal_version, chip->manufacturer,
+		 chip->lmp_pal_subversion);
 
 	pf_data = dev_get_platdata(core_info->dev);
 	if (pf_data->set_hci_revision)
@@ -1028,7 +1026,7 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 		chip_handled = tmp->cb.check_chip_support(
 				&(core_info->chip_dev));
 		if (chip_handled) {
-			CG2900_INFO("Chip handler found");
+			dev_info(MAIN_DEV, "Chip handler found\n");
 			break;
 		}
 	}
@@ -1038,11 +1036,14 @@ static bool handle_read_local_version_info_cmd_complete_evt(u8 *data)
 		 * We are now finished with the start-up during HwRegistered
 		 * operation.
 		 */
-		SET_BOOT_STATE(BOOT_READY);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_READY\n");
+		core_info->boot_state = BOOT_READY;
 		wake_up_interruptible(&main_wait_queue);
 	} else if (!chip_handled) {
-		CG2900_INFO("No chip handler found. Start-up complete");
-		SET_BOOT_STATE(BOOT_READY);
+		dev_info(MAIN_DEV,
+			 "No chip handler found. Start-up complete\n");
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_READY\n");
+		core_info->boot_state = BOOT_READY;
 		cg2900_chip_startup_finished(0);
 	} else {
 		cb = &(core_info->chip_dev.cb);
@@ -1089,7 +1090,8 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 
 	op_code = le16_to_cpu(cmd_complete->opcode);
 
-	CG2900_DBG_DATA("Received Command Complete: op_code = 0x%04X", op_code);
+	dev_dbg(MAIN_DEV, "Received Command Complete: op_code = 0x%04X\n",
+		op_code);
 	data += sizeof(*cmd_complete); /* Move to first byte after OCF */
 
 	if (op_code == HCI_OP_RESET)
@@ -1137,7 +1139,7 @@ static int test_char_dev_open(struct inode *inode, struct file *filp)
 		.set_chip_power = NULL
 	};
 
-	CG2900_INFO("test_char_dev_open");
+	dev_info(MAIN_DEV, "CG2900 test char dev opened\n");
 	return cg2900_register_trans_driver(&cb, NULL);
 }
 
@@ -1151,6 +1153,7 @@ static int test_char_dev_open(struct inode *inode, struct file *filp)
  */
 static int test_char_dev_release(struct inode *inode, struct file *filp)
 {
+	dev_info(MAIN_DEV, "CG2900 test char dev opened\n");
 	/* Clean the message queue */
 	skb_queue_purge(&core_info->test_char_dev->rx_queue);
 	return cg2900_deregister_trans_driver();
@@ -1175,7 +1178,7 @@ static ssize_t test_char_dev_read(struct file *filp, char __user *buf,
 	int err;
 	struct sk_buff_head *rx_queue = &core_info->test_char_dev->rx_queue;
 
-	CG2900_INFO("test_char_dev_read");
+	dev_dbg(MAIN_DEV, "test_char_dev_read count %d\n", count);
 
 	if (skb_queue_empty(rx_queue))
 		wait_event_interruptible(char_wait_queue,
@@ -1183,7 +1186,8 @@ static ssize_t test_char_dev_read(struct file *filp, char __user *buf,
 
 	skb = skb_dequeue(rx_queue);
 	if (!skb) {
-		CG2900_INFO("skb queue is empty - return with zero bytes");
+		dev_dbg(MAIN_DEV,
+			"skb queue is empty - return with zero bytes\n");
 		bytes_to_copy = 0;
 		goto finished;
 	}
@@ -1222,12 +1226,12 @@ static ssize_t test_char_dev_write(struct file *filp, const char __user *buf,
 {
 	struct sk_buff *skb;
 
-	CG2900_INFO("test_char_dev_write count %d", count);
+	dev_dbg(MAIN_DEV, "test_char_dev_write count %d\n", count);
 
 	/* Allocate the SKB and reserve space for the header */
 	skb = alloc_skb(count + RX_SKB_RESERVE, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Failed to alloc skb");
+		dev_err(MAIN_DEV, "test_char_dev_write: Failed to alloc skb\n");
 		return -ENOMEM;
 	}
 	skb_reserve(skb, RX_SKB_RESERVE);
@@ -1292,14 +1296,14 @@ static int test_char_dev_create(void)
 	int err;
 
 	if (core_info->test_char_dev) {
-		CG2900_ERR("Trying to allocate test_char_dev twice");
+		dev_err(MAIN_DEV, "Trying to allocate test_char_dev twice\n");
 		return -EBUSY;
 	}
 
 	core_info->test_char_dev = kzalloc(sizeof(*(core_info->test_char_dev)),
 					   GFP_KERNEL);
 	if (!core_info->test_char_dev) {
-		CG2900_ERR("Couldn't allocate test_char_dev");
+		dev_err(MAIN_DEV, "Couldn't allocate test_char_dev\n");
 		return -ENOMEM;
 	}
 
@@ -1314,7 +1318,7 @@ static int test_char_dev_create(void)
 
 	err = misc_register(&core_info->test_char_dev->test_miscdev);
 	if (err) {
-		CG2900_ERR("Error %d registering misc dev!", err);
+		dev_err(MAIN_DEV, "Error %d registering misc dev!", err);
 		kfree(core_info->test_char_dev);
 		core_info->test_char_dev = NULL;
 		return err;
@@ -1335,7 +1339,7 @@ static void test_char_dev_destroy(void)
 
 	err = misc_deregister(&core_info->test_char_dev->test_miscdev);
 	if (err)
-		CG2900_ERR("Error %d deregistering misc dev!", err);
+		dev_err(MAIN_DEV, "Error %d deregistering misc dev\n", err);
 
 	/* Clean the message queue */
 	skb_queue_purge(&core_info->test_char_dev->rx_queue);
@@ -1357,16 +1361,18 @@ static int open_transport(void)
 	int err = 0;
 	struct trans_info *trans_info = core_info->trans_info;
 
-	CG2900_INFO("open_transport");
+	dev_dbg(MAIN_DEV, "open_transport\n");
 
 	if (trans_info && trans_info->cb.open) {
 		err = trans_info->cb.open(&trans_info->dev);
 		if (err)
-			CG2900_ERR("Transport open failed (%d)", err);
+			dev_err(MAIN_DEV, "Transport open failed (%d)\n", err);
 	}
 
-	if (!err)
-		SET_TRANSPORT_STATE(TRANS_OPENED);
+	if (!err) {
+		dev_dbg(MAIN_DEV, "New transport_state: TRANS_OPENED\n");
+		core_info->transport_state = TRANS_OPENED;
+	}
 
 	return err;
 }
@@ -1378,16 +1384,18 @@ static void close_transport(void)
 {
 	struct trans_info *trans_info = core_info->trans_info;
 
-	CG2900_INFO("close_transport");
+	dev_dbg(MAIN_DEV, "close_transport\n");
 
 	/* Check so transport has not already been removed */
-	if (TRANS_OPENED == core_info->transport_state)
-		SET_TRANSPORT_STATE(TRANS_CLOSED);
+	if (TRANS_OPENED == core_info->transport_state) {
+		dev_dbg(MAIN_DEV, "New transport_state: TRANS_CLOSED\n");
+		core_info->transport_state = TRANS_CLOSED;
+	}
 
 	if (trans_info && trans_info->cb.close) {
 		int err = trans_info->cb.close(&trans_info->dev);
 		if (err)
-			CG2900_ERR("Transport close failed (%d)", err);
+			dev_err(MAIN_DEV, "Transport close failed (%d)\n", err);
 	}
 }
 
@@ -1410,7 +1418,8 @@ static int create_work_item(struct workqueue_struct *wq, work_func_t work_func,
 
 	new_work = kmalloc(sizeof(*new_work), GFP_ATOMIC);
 	if (!new_work) {
-		CG2900_ERR("Failed to alloc memory for cg2900_work_struct!");
+		dev_err(MAIN_DEV,
+			"Failed to alloc memory for cg2900_work_struct\n");
 		return -ENOMEM;
 	}
 
@@ -1419,8 +1428,9 @@ static int create_work_item(struct workqueue_struct *wq, work_func_t work_func,
 
 	err = queue_work(wq, &new_work->work);
 	if (!err) {
-		CG2900_ERR("Failed to queue work_struct because it's already "
-			   "in the queue!");
+		dev_err(MAIN_DEV,
+			"Failed to queue work_struct because it's already "
+			"in the queue\n");
 		kfree(new_work);
 		return -EBUSY;
 	}
@@ -1444,17 +1454,19 @@ static void work_hw_registered(struct work_struct *work)
 	struct trans_info *trans_info = core_info->trans_info;
 	struct hci_command_hdr cmd;
 
-	CG2900_INFO("work_hw_registered");
+	dev_dbg(MAIN_DEV, "work_hw_registered\n");
 
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV, "work_hw_registered: work == NULL\n");
 		return;
 	}
 
 	current_work = container_of(work, struct cg2900_work_struct, work);
 
-	SET_MAIN_STATE(CORE_INITIALIZING);
-	SET_BOOT_STATE(BOOT_NOT_STARTED);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_INITIALIZING\n");
+	core_info->main_state = CORE_INITIALIZING;
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_NOT_STARTED\n");
+	core_info->boot_state = BOOT_NOT_STARTED;
 
 	/*
 	 * This might look strange, but we need to read out
@@ -1475,7 +1487,8 @@ static void work_hw_registered(struct work_struct *work)
 	create_and_send_bt_cmd(&cmd, sizeof(cmd));
 
 	/* Wait up to 500 milliseconds for revision to be read out */
-	CG2900_DBG("Wait up to 500 milliseconds for revision to be read.");
+	dev_dbg(MAIN_DEV,
+		"Wait up to 500 milliseconds for revision to be read\n");
 	wait_event_interruptible_timeout(main_wait_queue,
 		(BOOT_READY == core_info->boot_state),
 		msecs_to_jiffies(REVISION_READOUT_TIMEOUT));
@@ -1536,7 +1549,7 @@ struct cg2900_device *cg2900_register_user(char  *name,
 	int err;
 	struct trans_info *trans_info = core_info->trans_info;
 
-	CG2900_INFO("cg2900_register_user %s", name);
+	pr_debug("cg2900_register_user %s", name);
 
 	BUG_ON(!core_info);
 
@@ -1548,35 +1561,36 @@ struct cg2900_device *cg2900_register_user(char  *name,
 
 	if (err <= 0) {
 		if (CORE_INITIALIZING == core_info->main_state)
-			CG2900_ERR("Transport not opened");
+			dev_err(MAIN_DEV, "Transport not opened\n");
 		else
-			CG2900_ERR("cg2900_register_user currently busy (0x%X)."
-				   " Try again.", core_info->main_state);
+			dev_err(MAIN_DEV,
+				"cg2900_register_user currently busy (0x%X). "
+				"Try again\n", core_info->main_state);
 		return NULL;
 	}
 
 	/* Allocate device */
 	current_dev = kzalloc(sizeof(*current_dev), GFP_ATOMIC);
 	if (!current_dev) {
-		CG2900_ERR("Couldn't allocate current dev");
+		dev_err(MAIN_DEV, "Couldn't allocate current dev\n");
 		goto error_handling;
 	}
 
 	if (!core_info->chip_dev.cb.get_h4_channel) {
-		CG2900_ERR("No channel handler registered");
+		dev_err(MAIN_DEV, "No channel handler registered\n");
 		goto error_handling;
 	}
 	err = core_info->chip_dev.cb.get_h4_channel(name,
 						    &(current_dev->h4_channel));
 	if (err) {
-		CG2900_ERR("Couldn't find H4 channel for %s", name);
+		dev_err(MAIN_DEV, "Couldn't find H4 channel for %s\n", name);
 		goto error_handling;
 	}
 	current_dev->dev = core_info->dev;
 	current_dev->cb = kmalloc(sizeof(*(current_dev->cb)),
 					 GFP_ATOMIC);
 	if (!current_dev->cb) {
-		CG2900_ERR("Couldn't allocate cb ");
+		dev_err(MAIN_DEV, "Couldn't allocate cb\n");
 		goto error_handling;
 	}
 	memcpy((char *)current_dev->cb, (char *)cb,
@@ -1586,12 +1600,12 @@ struct cg2900_device *cg2900_register_user(char  *name,
 	err = add_h4_user(current_dev, name);
 
 	if (!err) {
-		CG2900_DBG("H:4 channel 0x%X registered",
-			   current_dev->h4_channel);
+		dev_dbg(MAIN_DEV, "H:4 channel 0x%X registered\n",
+			current_dev->h4_channel);
 	} else {
-		CG2900_ERR("H:4 channel 0x%X already registered "
-			   "or other error (%d)",
-			   current_dev->h4_channel, err);
+		dev_err(MAIN_DEV, "H:4 channel 0x%X already registered "
+			"or other error (%d)\n",
+			current_dev->h4_channel, err);
 		goto error_handling;
 	}
 
@@ -1612,20 +1626,23 @@ struct cg2900_device *cg2900_register_user(char  *name,
 			 * freed as well.
 			 */
 			remove_h4_user(&current_dev);
+
+			if (trans_info && trans_info->cb.set_chip_power)
+				trans_info->cb.set_chip_power(false);
 			goto finished;
 		}
 
 		chip_startup();
 
 		/* Wait up to 15 seconds for chip to start */
-		CG2900_DBG("Wait up to 15 seconds for chip to start..");
+		dev_dbg(MAIN_DEV, "Wait up to 15 seconds for chip to start\n");
 		wait_event_interruptible_timeout(main_wait_queue,
 			(CORE_ACTIVE == core_info->main_state ||
 			 CORE_IDLE   == core_info->main_state),
 			msecs_to_jiffies(CHIP_STARTUP_TIMEOUT));
 		if (CORE_ACTIVE != core_info->main_state) {
-			CG2900_ERR("ST-Ericsson CG2900 driver failed to "
-				     "start");
+			dev_err(MAIN_DEV, "ST-Ericsson CG2900 driver failed to "
+				"start");
 
 			/* Close the transport and power off the chip */
 			close_transport();
@@ -1637,7 +1654,8 @@ struct cg2900_device *cg2900_register_user(char  *name,
 			remove_h4_user(&current_dev);
 
 			/* Chip shut-down finished, set correct state. */
-			SET_MAIN_STATE(CORE_IDLE);
+			dev_dbg(MAIN_DEV, "New main_state: CORE_IDLE\n");
+			core_info->main_state = CORE_IDLE;
 		}
 	}
 	goto finished;
@@ -1658,12 +1676,13 @@ void cg2900_deregister_user(struct cg2900_device *dev)
 	int h4_channel;
 	int err = 0;
 
-	CG2900_INFO("cg2900_deregister_user");
+	pr_debug("cg2900_deregister_user");
 
 	BUG_ON(!core_info);
 
 	if (!dev) {
-		CG2900_ERR("Calling with NULL pointer");
+		dev_err(MAIN_DEV,
+			"cg2900_deregister_user: Calling with NULL pointer\n");
 		return;
 	}
 
@@ -1672,13 +1691,13 @@ void cg2900_deregister_user(struct cg2900_device *dev)
 	/* Remove the user. If there is no error it will be freed as well */
 	err = remove_h4_user(&dev);
 	if (err) {
-		CG2900_ERR("Trying to deregister non-registered "
-			   "H:4 channel 0x%X or other error %d",
-			   h4_channel, err);
+		dev_err(MAIN_DEV, "Trying to deregister non-registered "
+			"H:4 channel 0x%X or other error %d\n",
+			h4_channel, err);
 		return;
 	}
 
-	CG2900_DBG("H:4 channel 0x%X deregistered", h4_channel);
+	dev_dbg(MAIN_DEV, "H:4 channel 0x%X deregistered\n", h4_channel);
 
 	if (0 != core_info->users.nbr_of_users)
 		/* This was not the last user, we're done. */
@@ -1688,25 +1707,28 @@ void cg2900_deregister_user(struct cg2900_device *dev)
 		/* Chip has already been shut down. */
 		return;
 
-	SET_MAIN_STATE(CORE_CLOSING);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_CLOSING\n");
+	core_info->main_state = CORE_CLOSING;
 	chip_shutdown();
 
 	/* Wait up to 15 seconds for chip to shut-down */
-	CG2900_DBG("Wait up to 15 seconds for chip to shut-down..");
+	dev_dbg(MAIN_DEV, "Wait up to 15 seconds for chip to shut-down\n");
 	wait_event_interruptible_timeout(main_wait_queue,
 				(CORE_IDLE == core_info->main_state),
 				msecs_to_jiffies(CHIP_SHUTDOWN_TIMEOUT));
 
 	/* Force shutdown if we timed out */
 	if (CORE_IDLE != core_info->main_state) {
-		CG2900_ERR("ST-Ericsson CG2900 Core Driver was shut-down with "
-			   "problems.");
+		dev_err(MAIN_DEV,
+			"ST-Ericsson CG2900 Core Driver was shut-down with "
+			"problems.");
 
 		/* Close the transport and power off the chip */
 		close_transport();
 
 		/* Chip shut-down finished, set correct state. */
-		SET_MAIN_STATE(CORE_IDLE);
+		dev_dbg(MAIN_DEV, "New main_state: CORE_IDLE\n");
+		core_info->main_state = CORE_IDLE;
 	}
 }
 EXPORT_SYMBOL(cg2900_deregister_user);
@@ -1721,11 +1743,12 @@ EXPORT_SYMBOL(cg2900_deregister_user);
  */
 int cg2900_reset(struct cg2900_device *dev)
 {
-	CG2900_INFO("cg2900_reset");
+	pr_info("cg2900_reset");
 
 	BUG_ON(!core_info);
 
-	SET_MAIN_STATE(CORE_RESETING);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_RESETING\n");
+	core_info->main_state = CORE_RESETING;
 
 	/* Shutdown the chip */
 	chip_shutdown();
@@ -1746,7 +1769,8 @@ int cg2900_reset(struct cg2900_device *dev)
 	core_info->users.nbr_of_users = 0;
 
 	/* Reset finished. We are now idle until first user is registered */
-	SET_MAIN_STATE(CORE_IDLE);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_IDLE\n");
+	core_info->main_state = CORE_IDLE;
 
 	/*
 	 * Send wake-up since this might have been called from a failed boot.
@@ -1771,8 +1795,7 @@ struct sk_buff *cg2900_alloc_skb(unsigned int size, gfp_t priority)
 {
 	struct sk_buff *skb;
 
-	CG2900_INFO("cg2900_alloc_skb");
-	CG2900_DBG("size %d bytes", size);
+	dev_dbg(MAIN_DEV, "cg2900_alloc_skb size %d bytes\n", size);
 
 	/* Allocate the SKB and reserve space for the header */
 	skb = alloc_skb(size + CG2900_SKB_RESERVE, priority);
@@ -1807,21 +1830,19 @@ int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb)
 	u8 *h4_header;
 	struct cg2900_chip_callbacks *cb;
 
-	CG2900_DBG_DATA("cg2900_write");
-
 	BUG_ON(!core_info);
 
 	if (!dev) {
-		CG2900_ERR("cg2900_write with no device");
+		dev_err(MAIN_DEV, "cg2900_write with no device\n");
 		return -EINVAL;
 	}
 
 	if (!skb) {
-		CG2900_ERR("cg2900_write with no sk_buffer");
+		dev_err(MAIN_DEV, "cg2900_write with no sk_buffer\n");
 		return -EINVAL;
 	}
 
-	CG2900_DBG_DATA("Length %d bytes", skb->len);
+	dev_dbg(MAIN_DEV, "cg2900_write length %d bytes\n", skb->len);
 
 	if (core_info->h4_channels.hci_logger_channel == dev->h4_channel) {
 		/*
@@ -1830,8 +1851,8 @@ int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb)
 		 */
 		err = enable_hci_logger(skb);
 	} else if (core_info->h4_channels.core_channel == dev->h4_channel) {
-		CG2900_ERR("Not possible to write data on core channel, "
-			   "it only supports enable / disable chip");
+		dev_err(MAIN_DEV, "Not possible to write data on core channel, "
+			"it only supports enable / disable chip\n");
 		err = -EPERM;
 	} else if (CORE_ACTIVE == core_info->main_state) {
 		/*
@@ -1850,8 +1871,9 @@ int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb)
 		    !(cb->data_to_chip(&(core_info->chip_dev), dev, skb)))
 			transmit_skb_to_chip(skb, dev->logger_enabled);
 	} else {
-		CG2900_ERR("Trying to transmit data when CG2900 Core is not "
-			     "active");
+		dev_err(MAIN_DEV,
+			"Trying to transmit data when CG2900 Core is not "
+			"active\n");
 		err = -EACCES;
 	}
 
@@ -1876,7 +1898,7 @@ bool cg2900_get_local_revision(struct cg2900_rev_data *rev_data)
 	BUG_ON(!core_info);
 
 	if (!rev_data) {
-		CG2900_ERR("Calling with rev_data NULL");
+		dev_err(MAIN_DEV, "Calling with rev_data NULL\n");
 		return false;
 	}
 
@@ -1894,16 +1916,18 @@ int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb)
 {
 	struct chip_handler_item *item;
 
-	CG2900_INFO("cg2900_register_chip_driver");
+	dev_dbg(MAIN_DEV, "cg2900_register_chip_driver\n");
 
 	if (!cb) {
-		CG2900_ERR("NULL supplied as cb");
+		dev_err(MAIN_DEV, "NULL supplied as cb\n");
 		return -EINVAL;
 	}
 
 	item = kzalloc(sizeof(*item), GFP_ATOMIC);
 	if (!item) {
-		CG2900_ERR("Failed to alloc memory!");
+		dev_err(MAIN_DEV,
+			"cg2900_register_chip_driver: "
+			"Failed to alloc memory\n");
 		return -ENOMEM;
 	}
 
@@ -1919,17 +1943,17 @@ int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
 
 	BUG_ON(!core_info);
 
-	CG2900_INFO("cg2900_register_trans_driver");
+	dev_dbg(MAIN_DEV, "cg2900_register_trans_driver\n");
 
 	if (core_info->trans_info) {
-		CG2900_ERR("trans_info already exists");
+		dev_err(MAIN_DEV, "trans_info already exists\n");
 		return -EACCES;
 	}
 
 	core_info->trans_info = kzalloc(sizeof(*(core_info->trans_info)),
 					GFP_KERNEL);
 	if (!core_info->trans_info) {
-		CG2900_ERR("Could not allocate trans_info");
+		dev_err(MAIN_DEV, "Could not allocate trans_info\n");
 		return -ENOMEM;
 	}
 
@@ -1939,8 +1963,8 @@ int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
 
 	err = create_work_item(core_info->wq, work_hw_registered, NULL);
 	if (err) {
-		CG2900_ERR("Could not create work item (%d) "
-			     "work_hw_registered", err);
+		dev_err(MAIN_DEV, "Could not create work item (%d) "
+			"work_hw_registered\n", err);
 	}
 
 	return err;
@@ -1951,10 +1975,12 @@ int cg2900_deregister_trans_driver(void)
 {
 	BUG_ON(!core_info);
 
-	CG2900_INFO("cg2900_deregister_trans_driver");
+	dev_dbg(MAIN_DEV, "cg2900_deregister_trans_driver\n");
 
-	SET_MAIN_STATE(CORE_INITIALIZING);
-	SET_TRANSPORT_STATE(TRANS_INITIALIZING);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_INITIALIZING\n");
+	core_info->main_state = CORE_INITIALIZING;
+	dev_dbg(MAIN_DEV, "New transport_state: TRANS_INITIALIZING\n");
+	core_info->transport_state = TRANS_INITIALIZING;
 
 	if (!core_info->trans_info)
 		return -EACCES;
@@ -1968,18 +1994,20 @@ EXPORT_SYMBOL(cg2900_deregister_trans_driver);
 
 int cg2900_chip_startup_finished(int err)
 {
-	CG2900_INFO("cg2900_chip_startup_finished (%d)", err);
+	dev_dbg(MAIN_DEV, "cg2900_chip_startup_finished (%d)\n", err);
 
 	if (err)
 		/* Shutdown the chip */
 		chip_shutdown();
-	else
-		SET_MAIN_STATE(CORE_ACTIVE);
+	else {
+		dev_dbg(MAIN_DEV, "New main_state: CORE_ACTIVE\n");
+		core_info->main_state = CORE_ACTIVE;
+	}
 
 	wake_up_interruptible(&main_wait_queue);
 
 	if (!core_info->trans_info->cb.chip_startup_finished)
-		CG2900_ERR("chip_startup_finished callback not found.");
+		dev_err(MAIN_DEV, "chip_startup_finished callback not found\n");
 	else
 		core_info->trans_info->cb.chip_startup_finished();
 	return 0;
@@ -1988,13 +2016,14 @@ EXPORT_SYMBOL(cg2900_chip_startup_finished);
 
 int cg2900_chip_shutdown_finished(int err)
 {
-	CG2900_INFO("cg2900_chip_shutdown_finished (%d)", err);
+	dev_dbg(MAIN_DEV, "cg2900_chip_shutdown_finished (%d)\n", err);
 
 	/* Close the transport, which will power off the chip */
 	close_transport();
 
 	/* Chip shut-down finished, set correct state and wake up the chip. */
-	SET_MAIN_STATE(CORE_IDLE);
+	dev_dbg(MAIN_DEV, "New main_state: CORE_IDLE\n");
+	core_info->main_state = CORE_IDLE;
 	wake_up_interruptible(&main_wait_queue);
 
 	return 0;
@@ -2071,10 +2100,10 @@ void cg2900_data_from_chip(struct sk_buff *skb)
 	struct sk_buff *skb_log;
 	struct cg2900_device *logger;
 
-	CG2900_INFO("cg2900_data_from_chip");
+	dev_dbg(MAIN_DEV, "cg2900_data_from_chip\n");
 
 	if (!skb) {
-		CG2900_ERR("No data supplied");
+		dev_err(MAIN_DEV, "No data supplied\n");
 		return;
 	}
 
@@ -2088,7 +2117,7 @@ void cg2900_data_from_chip(struct sk_buff *skb)
 	     core_info->main_state == CORE_INITIALIZING) &&
 	    (HCI_BT_EVT_H4_CHANNEL == h4_channel) &&
 	    handle_rx_data_bt_evt(skb)) {
-		CG2900_DBG("Received packet handled internally");
+		dev_dbg(MAIN_DEV, "Received packet handled internally\n");
 		return;
 	}
 
@@ -2102,8 +2131,8 @@ void cg2900_data_from_chip(struct sk_buff *skb)
 		return;
 
 	if (err || !dev) {
-		CG2900_ERR("H:4 channel: 0x%X,  does not match device",
-			     h4_channel);
+		dev_err(MAIN_DEV, "H:4 channel: 0x%X does not match device\n",
+			h4_channel);
 		kfree_skb(skb);
 		return;
 	}
@@ -2122,7 +2151,7 @@ void cg2900_data_from_chip(struct sk_buff *skb)
 	 */
 	skb_log = alloc_skb(skb->len + 1, GFP_ATOMIC);
 	if (!skb_log) {
-		CG2900_ERR("Couldn't allocate skb_log");
+		dev_err(MAIN_DEV, "Couldn't allocate skb_log\n");
 		goto transmit;
 	}
 
@@ -2198,25 +2227,25 @@ static int __devinit cg2900_probe(struct platform_device *pdev)
 	int err;
 	struct cg2900_platform_data *pf_data;
 
-	CG2900_INFO("cg2900_probe");
+	pr_debug("cg2900_probe");
 
 	pf_data = dev_get_platdata(&pdev->dev);
 	if (!pf_data) {
-		CG2900_ERR("Missing platform data");
+		pr_err("Missing platform data");
 		return -EINVAL;
 	}
 
 	if (pf_data->init) {
 		err = pf_data->init();
 		if (err) {
-			CG2900_ERR("Platform init failed (%d)", err);
+			pr_err("Platform init failed (%d)", err);
 			return err;
 		}
 	}
 
 	core_info = kzalloc(sizeof(*core_info), GFP_KERNEL);
 	if (!core_info) {
-		CG2900_ERR("Couldn't allocate core_info");
+		pr_err("Couldn't allocate core_info");
 		return -ENOMEM;
 	}
 
@@ -2236,7 +2265,7 @@ static int __devinit cg2900_probe(struct platform_device *pdev)
 
 	core_info->wq = create_singlethread_workqueue(CORE_WQ_NAME);
 	if (!core_info->wq) {
-		CG2900_ERR("Could not create workqueue");
+		dev_err(MAIN_DEV, "Could not create workqueue\n");
 		err = -ENOMEM;
 		goto error_handling;
 	}
@@ -2251,9 +2280,11 @@ static int __devinit cg2900_probe(struct platform_device *pdev)
 	err = mfd_add_devices(core_info->dev, 0, cg2900_devs,
 			      ARRAY_SIZE(cg2900_devs), NULL, 0);
 	if (err) {
-		CG2900_ERR("Failed to add MFD devices (%d)", err);
+		dev_err(MAIN_DEV, "Failed to add MFD devices (%d)\n", err);
 		goto error_handling_test_destroy;
 	}
+
+	dev_info(MAIN_DEV, "CG2900 Core driver started\n");
 
 	return 0;
 
@@ -2282,10 +2313,10 @@ static int __devexit cg2900_remove(struct platform_device *pdev)
 {
 	struct cg2900_platform_data *pf_data;
 
-	CG2900_INFO("cg2900_remove");
+	pr_debug("cg2900_remove");
 
 	if (!core_info) {
-		CG2900_ERR("CG2900 Core not initiated");
+		pr_err("CG2900 Core not initiated");
 		return -ENOMEM;
 	}
 
@@ -2309,12 +2340,14 @@ static int __devexit cg2900_remove(struct platform_device *pdev)
 
 	destroy_workqueue(core_info->wq);
 
+	dev_info(MAIN_DEV, "CG2900 Core driver removed\n");
+
 	kfree(core_info);
 	core_info = NULL;
 
 	pf_data = dev_get_platdata(&pdev->dev);
 	if (!pf_data) {
-		CG2900_ERR("Missing platform data");
+		pr_err("Missing platform data");
 		return -EINVAL;
 	}
 
@@ -2340,7 +2373,7 @@ static struct platform_driver cg2900_driver = {
  */
 static int __init cg2900_init(void)
 {
-	CG2900_INFO("cg2900_init");
+	pr_debug("cg2900_init");
 	return platform_driver_register(&cg2900_driver);
 }
 
@@ -2351,7 +2384,7 @@ static int __init cg2900_init(void)
  */
 static void __exit cg2900_exit(void)
 {
-	CG2900_INFO("cg2900_exit");
+	pr_debug("cg2900_exit");
 	platform_driver_unregister(&cg2900_driver);
 }
 
@@ -2363,16 +2396,6 @@ MODULE_PARM_DESC(sleep_timeout_ms,
 		 "Sleep timeout for data transmissions:\n"
 		 "\t0 = disable <default>\n"
 		 "\t>0 = sleep timeout in milliseconds");
-
-module_param(cg2900_debug_level, int, S_IRUGO | S_IWUSR | S_IWGRP);
-MODULE_PARM_DESC(cg2900_debug_level,
-		 "Debug level. Default 1. Possible values:\n"
-		 "\t0  = No debug\n"
-		 "\t1  = Error prints\n"
-		 "\t10 = General info, e.g. function entries\n"
-		 "\t20 = Debug info, e.g. steps in a functionality\n"
-		 "\t25 = Data info, i.e. prints when data is transferred\n"
-		 "\t30 = Data content, i.e. contents of the transferred data");
 
 module_param_array(bd_address, byte, &bd_addr_count,
 		   S_IRUGO | S_IWUSR | S_IWGRP);

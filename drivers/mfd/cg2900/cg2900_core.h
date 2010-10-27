@@ -20,9 +20,26 @@
 #include <linux/skbuff.h>
 
 /* Reserve 1 byte for the HCI H:4 header */
-#define CG2900_SKB_RESERVE			1
+#define HCI_H4_SIZE				1
+#define CG2900_SKB_RESERVE			HCI_H4_SIZE
 
 #define BT_BDADDR_SIZE				6
+
+/* Standardized Bluetooth H:4 channels */
+#define HCI_BT_CMD_H4_CHANNEL			0x01
+#define HCI_BT_ACL_H4_CHANNEL			0x02
+#define HCI_BT_SCO_H4_CHANNEL			0x03
+#define HCI_BT_EVT_H4_CHANNEL			0x04
+
+/* Default H4 channels which may change depending on connected controller */
+#define HCI_FM_RADIO_H4_CHANNEL			0x08
+#define HCI_GNSS_H4_CHANNEL			0x09
+
+/* Bluetooth error codes */
+#define HCI_BT_ERROR_NO_ERROR			0x00
+
+/* Bluetooth lengths */
+#define HCI_BT_SEND_FILE_MAX_CHUNK_SIZE		254
 
 struct cg2900_h4_channels {
 	int	bt_cmd_channel;

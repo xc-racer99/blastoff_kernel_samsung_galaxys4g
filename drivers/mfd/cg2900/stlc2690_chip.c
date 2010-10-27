@@ -12,6 +12,8 @@
  *
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson STLC2690 BT/FM controller.
  */
+#define NAME					"stlc2690_chip"
+#define pr_fmt(fmt)				NAME ": " fmt "\n"
 
 #include <asm/byteorder.h>
 #include <linux/firmware.h>
@@ -36,10 +38,10 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 
-#include "hci_defines.h"
 #include "stlc2690_chip.h"
 #include "cg2900_core.h"
-#include "cg2900_debug.h"
+
+#define MAIN_DEV				(stlc2690_info->dev)
 
 /*
  * Max length in bytes for line buffer used to parse settings and patch file.
@@ -60,16 +62,6 @@
 #define FILE_CHUNK_ID_SIZE			1
 #define VS_SEND_FILE_CHUNK_ID_POS		4
 #define BT_CMD_LEN_POS				3
-
-/* State setting macros */
-#define SET_BOOT_STATE(__new_state) \
-	CG2900_SET_STATE("boot_state", stlc2690_info->boot_state, __new_state)
-#define SET_FILE_LOAD_STATE(__new_state) \
-	CG2900_SET_STATE("file_load_state", stlc2690_info->file_load_state, \
-			 __new_state)
-#define SET_DOWNLOAD_STATE(__new_state) \
-	CG2900_SET_STATE("download_state", stlc2690_info->download_state, \
-			 __new_state)
 
 /** CHANNEL_BT_CMD - Bluetooth HCI H:4 channel
  * for Bluetooth commands in the ST-Ericsson connectivity controller.
@@ -239,7 +231,8 @@ static void create_and_send_bt_cmd(void *data, int length)
 
 	skb = alloc_skb(length, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Couldn't allocate sk_buff with length %d", length);
+		dev_err(MAIN_DEV, "Couldn't allocate sk_buff with length %d\n",
+			length);
 		return;
 	}
 
@@ -252,7 +245,7 @@ static void create_and_send_bt_cmd(void *data, int length)
 	else
 		err = cg2900_send_to_chip(skb, false);
 	if (err) {
-		CG2900_ERR("Failed to transmit to chip (%d)", err);
+		dev_err(MAIN_DEV, "Failed to transmit to chip (%d)\n", err);
 		kfree_skb(skb);
 	}
 }
@@ -266,7 +259,7 @@ static void send_bd_address(void)
 	struct hci_command_hdr *hdr;
 	u8 *tmp;
 	u8 *data;
-	u8 plen = sizeof(*cmd) + BT_BDADDR_SIZE - 1;
+	u8 plen = sizeof(*cmd) + BT_BDADDR_SIZE;
 
 	data = kmalloc(sizeof(*hdr) + plen, GFP_KERNEL);
 	if (!data)
@@ -282,9 +275,10 @@ static void send_bd_address(void)
 	cmd->user_id = STLC2690_VS_STORE_IN_FS_USR_ID_BD_ADDR;
 	cmd->len = BT_BDADDR_SIZE;
 	/* Now copy the BD address received from user space control app. */
-	memcpy(&(cmd->data), bd_address, BT_BDADDR_SIZE);
+	memcpy(cmd->data, bd_address, BT_BDADDR_SIZE);
 
-	SET_BOOT_STATE(BOOT_SEND_BD_ADDRESS);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_SEND_BD_ADDRESS\n");
+	stlc2690_info->boot_state = BOOT_SEND_BD_ADDRESS;
 
 	create_and_send_bt_cmd(data, sizeof(*hdr) + plen);
 
@@ -305,7 +299,8 @@ static void create_work_item(work_func_t work_func, struct sk_buff *skb,
 
 	new_work = kmalloc(sizeof(*new_work), GFP_ATOMIC);
 	if (!new_work) {
-		CG2900_ERR("Failed to alloc memory for stlc2690_work_struct!");
+		dev_err(MAIN_DEV,
+			"Failed to alloc memory for stlc2690_work_struct\n");
 		return;
 	}
 
@@ -315,8 +310,9 @@ static void create_work_item(work_func_t work_func, struct sk_buff *skb,
 
 	wq_err = queue_work(stlc2690_info->wq, &new_work->work);
 	if (!wq_err) {
-		CG2900_ERR("Failed to queue work_struct because it's already in"
-			   " the queue!");
+		dev_err(MAIN_DEV,
+			"Failed to queue work_struct because it's already in"
+			" the queue\n");
 		kfree(new_work);
 	}
 }
@@ -377,9 +373,7 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 
 	line_buffer = kzalloc(LINE_BUFFER_LENGTH, GFP_ATOMIC);
 	if (!line_buffer) {
-		CG2900_ERR("Failed to allocate: file_name 0x%X, "
-			   "line_buffer 0x%X",
-			   (u32)file_name, (u32)line_buffer);
+		dev_err(MAIN_DEV, "Failed to allocate line buffer\n");
 		goto finished;
 	}
 
@@ -394,7 +388,8 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 		bytes_left_to_parse -= bytes_read;
 		if (bytes_left_to_parse <= 0) {
 			/* End of file => Leave while loop */
-			CG2900_ERR("Reached end of file. No file found!");
+			dev_err(MAIN_DEV,
+				"Reached end of file. No file found\n");
 			break;
 		}
 
@@ -408,7 +403,7 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 		hci_rev = 0;
 		lmp_sub = 0;
 
-		CG2900_DBG("Found a valid line <%s>", line_buffer);
+		dev_dbg(MAIN_DEV, "Found a valid line \t%s\n", line_buffer);
 
 		/*
 		 * Check if we can find the correct HCI revision and
@@ -421,21 +416,20 @@ static bool get_file_to_load(const struct firmware *fw, char **file_name)
 		    && hci_rev == stlc2690_info->chip_dev.chip.hci_revision
 		    && lmp_sub ==
 				 stlc2690_info->chip_dev.chip.hci_sub_version) {
-			CG2900_DBG("File matching chip found\n"
-				   "\tFile name = %s\n"
-				   "\tHCI Revision = 0x%X\n"
-				   "\tLMP PAL Subversion = 0x%X",
-				   *file_name, hci_rev, lmp_sub);
+			dev_dbg(MAIN_DEV, "File matching chip found\n"
+				"\tFile name = %s\n"
+				"\tHCI Revision = 0x%X\n"
+				"\tLMP PAL Subversion = 0x%X\n",
+				*file_name, hci_rev, lmp_sub);
 
 			/*
 			 * Name has already been stored above. Nothing more to
 			 * do.
 			 */
 			file_found = true;
-		} else {
+		} else
 			/* Zero the name buffer so it is clear to next read */
 			memset(*file_name, 0x00, NAME_MAX + 1);
-		}
 	}
 	kfree(line_buffer);
 
@@ -469,7 +463,8 @@ static void read_and_send_file_part(void)
 
 	if (bytes_to_copy <= 0) {
 		/* Nothing more to read in file. */
-		SET_DOWNLOAD_STATE(DOWNLOAD_SUCCESS);
+		dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_SUCCESS\n");
+		stlc2690_info->download_state = DOWNLOAD_SUCCESS;
 		stlc2690_info->chunk_id = 0;
 		stlc2690_info->file_offset = 0;
 		return;
@@ -479,11 +474,13 @@ static void read_and_send_file_part(void)
 	logger_config = cg2900_get_hci_logger_config();
 
 	/* There are bytes to transmit. Allocate a sk_buffer. */
-	plen = sizeof(*cmd) - 1 + bytes_to_copy;
+	plen = sizeof(*cmd) + bytes_to_copy;
 	skb = cg2900_alloc_skb(sizeof(*hdr) + plen, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Couldn't allocate sk_buffer");
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"read_and_send_file_part: Couldn't allocate skb\n");
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		stlc2690_info->boot_state = BOOT_FAILED;
 		cg2900_chip_startup_finished(-EIO);
 		return;
 	}
@@ -534,14 +531,15 @@ static void send_settings_file(void)
 		return;
 
 	/* Settings file finished. Release used resources */
-	CG2900_DBG("Settings file finished, release used resources");
+	dev_dbg(MAIN_DEV, "Settings file finished, release used resources\n");
 
 	if (stlc2690_info->fw_file) {
 		release_firmware(stlc2690_info->fw_file);
 		stlc2690_info->fw_file = NULL;
 	}
 
-	SET_FILE_LOAD_STATE(FILE_LOAD_NO_MORE_FILES);
+	dev_dbg(MAIN_DEV, "New file_load_state: FILE_LOAD_NO_MORE_FILES\n");
+	stlc2690_info->file_load_state = FILE_LOAD_NO_MORE_FILES;
 
 	/* Create and send HCI VS Store In FS command with bd address. */
 	send_bd_address();
@@ -569,7 +567,7 @@ static void send_patch_file(void)
 		return;
 
 	/* Patch file finished. Release used resources */
-	CG2900_DBG("Patch file finished, release used resources");
+	dev_dbg(MAIN_DEV, "Patch file finished, release used resources\n");
 
 	if (stlc2690_info->fw_file) {
 		release_firmware(stlc2690_info->fw_file);
@@ -580,18 +578,22 @@ static void send_patch_file(void)
 			       stlc2690_info->settings_file_name,
 			       stlc2690_info->dev);
 	if (err < 0) {
-		CG2900_ERR("Couldn't get settings file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get settings file (%d)\n", err);
 		goto error_handling;
 	}
 
 	/* Now send the settings file */
-	SET_FILE_LOAD_STATE(FILE_LOAD_GET_STATIC_SETTINGS);
-	SET_DOWNLOAD_STATE(DOWNLOAD_PENDING);
+	dev_dbg(MAIN_DEV,
+		"New file_load_state: FILE_LOAD_GET_STATIC_SETTINGS\n");
+	stlc2690_info->file_load_state = FILE_LOAD_GET_STATIC_SETTINGS;
+	dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_PENDING\n");
+	stlc2690_info->download_state = DOWNLOAD_PENDING;
 	send_settings_file();
 	return;
 
 error_handling:
-	SET_BOOT_STATE(BOOT_FAILED);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+	stlc2690_info->boot_state = BOOT_FAILED;
 	cg2900_chip_startup_finished(err);
 }
 
@@ -606,7 +608,7 @@ static void work_reset_after_error(struct work_struct *work)
 	struct stlc2690_work_struct *current_work = NULL;
 
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV, "work_reset_after_error: work == NULL\n");
 		return;
 	}
 
@@ -630,7 +632,8 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	const struct firmware *settings_info;
 
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV,
+			"work_load_patch_and_settings: work == NULL\n");
 		return;
 	}
 
@@ -644,7 +647,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	err = request_firmware(&patch_info, PATCH_INFO_FILE,
 			       stlc2690_info->dev);
 	if (err) {
-		CG2900_ERR("Couldn't get patch info file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get patch info file (%d)\n", err);
 		goto error_handling;
 	}
 
@@ -659,7 +662,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	release_firmware(patch_info);
 
 	if (!file_found) {
-		CG2900_ERR("Couldn't find patch file! Major error!");
+		dev_err(MAIN_DEV, "Couldn't find patch file! Major error\n");
 		goto error_handling;
 	}
 
@@ -667,7 +670,8 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	err = request_firmware(&settings_info, FACTORY_SETTINGS_INFO_FILE,
 			       stlc2690_info->dev);
 	if (err) {
-		CG2900_ERR("Couldn't get settings info file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get settings info file (%d)\n",
+			err);
 		goto error_handling;
 	}
 
@@ -682,14 +686,17 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	release_firmware(settings_info);
 
 	if (!file_found) {
-		CG2900_ERR("Couldn't find settings file! Major error!");
+		dev_err(MAIN_DEV, "Couldn't find settings file! Major error\n");
 		goto error_handling;
 	}
 
 	/* We now all info needed */
-	SET_BOOT_STATE(BOOT_DOWNLOAD_PATCH);
-	SET_DOWNLOAD_STATE(DOWNLOAD_PENDING);
-	SET_FILE_LOAD_STATE(FILE_LOAD_GET_PATCH);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_DOWNLOAD_PATCH\n");
+	stlc2690_info->boot_state = BOOT_DOWNLOAD_PATCH;
+	dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_PENDING\n");
+	stlc2690_info->download_state = DOWNLOAD_PENDING;
+	dev_dbg(MAIN_DEV, "New file_load_state: FILE_LOAD_GET_PATCH\n");
+	stlc2690_info->file_load_state = FILE_LOAD_GET_PATCH;
 	stlc2690_info->chunk_id = 0;
 	stlc2690_info->file_offset = 0;
 	stlc2690_info->fw_file = NULL;
@@ -699,7 +706,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 			       stlc2690_info->patch_file_name,
 			       stlc2690_info->dev);
 	if (err < 0) {
-		CG2900_ERR("Couldn't get patch file (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't get patch file (%d)\n", err);
 		goto error_handling;
 	}
 	send_patch_file();
@@ -707,7 +714,8 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	goto finished;
 
 error_handling:
-	SET_BOOT_STATE(BOOT_FAILED);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+	stlc2690_info->boot_state = BOOT_FAILED;
 	cg2900_chip_startup_finished(-EIO);
 finished:
 	kfree(current_work);
@@ -725,7 +733,8 @@ static void work_cont_with_file_download(struct work_struct *work)
 	struct stlc2690_work_struct *current_work;
 
 	if (!work) {
-		CG2900_ERR("work == NULL");
+		dev_err(MAIN_DEV,
+			"work_cont_with_file_download: work == NULL\n");
 		return;
 	}
 
@@ -738,7 +747,7 @@ static void work_cont_with_file_download(struct work_struct *work)
 			FILE_LOAD_GET_STATIC_SETTINGS)
 		send_settings_file();
 	else
-		CG2900_INFO("No more files to load");
+		dev_dbg(MAIN_DEV, "No more files to load\n");
 
 	kfree(current_work);
 }
@@ -755,7 +764,7 @@ static bool handle_reset_cmd_complete(u8 *data)
 {
 	u8 status;
 
-	CG2900_INFO("Received Reset complete event");
+	dev_dbg(MAIN_DEV, "Received Reset complete event\n");
 
 	if (stlc2690_info->boot_state != BOOT_ACTIVATE_PATCHES_AND_SETTINGS)
 		return false;
@@ -767,12 +776,15 @@ static bool handle_reset_cmd_complete(u8 *data)
 		 * The boot sequence is now finished successfully.
 		 * Set states and signal to waiting thread.
 		 */
-		SET_BOOT_STATE(BOOT_READY);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_READY\n");
+		stlc2690_info->boot_state = BOOT_READY;
 		cg2900_chip_startup_finished(0);
 	} else {
-		CG2900_ERR("Received Reset complete event with status 0x%X",
-			   status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Received Reset complete event with status 0x%X\n",
+			status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		stlc2690_info->boot_state = BOOT_FAILED;
 		cg2900_chip_startup_finished(-EIO);
 	}
 	return true;
@@ -790,7 +802,7 @@ static bool handle_vs_store_in_fs_cmd_complete(u8 *data)
 {
 	u8 status;
 
-	CG2900_INFO("Received Store_in_FS complete event");
+	dev_dbg(MAIN_DEV, "Received Store_in_FS complete event\n");
 
 	if (stlc2690_info->boot_state != BOOT_SEND_BD_ADDRESS)
 		return false;
@@ -801,14 +813,18 @@ static bool handle_vs_store_in_fs_cmd_complete(u8 *data)
 		struct hci_command_hdr cmd;
 
 		/* Send HCI Reset command to activate patches */
-		SET_BOOT_STATE(BOOT_ACTIVATE_PATCHES_AND_SETTINGS);
+		dev_dbg(MAIN_DEV,
+			"New boot_state: BOOT_ACTIVATE_PATCHES_AND_SETTINGS\n");
+		stlc2690_info->boot_state = BOOT_ACTIVATE_PATCHES_AND_SETTINGS;
 		cmd.opcode = cpu_to_le16(HCI_OP_RESET);
 		cmd.plen = 0; /* No parameters for HCI Reset */
 		create_and_send_bt_cmd(&cmd, sizeof(cmd));
 	} else {
-		CG2900_ERR("Command Complete for StoreInFS received with "
-			   "error 0x%X", status);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Command Complete for StoreInFS received with "
+			"error 0x%X\n", status);
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		stlc2690_info->boot_state = BOOT_FAILED;
 		create_work_item(work_reset_after_error, NULL, NULL);
 	}
 	/* We have now handled the packet */
@@ -836,10 +852,13 @@ static bool handle_vs_write_file_block_cmd_complete(u8 *data)
 		/* Received good confirmation. Start work to continue. */
 		create_work_item(work_cont_with_file_download, NULL, NULL);
 	} else {
-		CG2900_ERR("Command Complete for WriteFileBlock received with "
-			   "error 0x%X", status);
-		SET_DOWNLOAD_STATE(DOWNLOAD_FAILED);
-		SET_BOOT_STATE(BOOT_FAILED);
+		dev_err(MAIN_DEV,
+			"Command Complete for WriteFileBlock received with "
+			"error 0x%X\n", status);
+		dev_dbg(MAIN_DEV, "New download_state: DOWNLOAD_FAILED\n");
+		stlc2690_info->download_state = DOWNLOAD_FAILED;
+		dev_dbg(MAIN_DEV, "New boot_state: BOOT_FAILED\n");
+		stlc2690_info->boot_state = BOOT_FAILED;
 		if (stlc2690_info->fw_file) {
 			release_firmware(stlc2690_info->fw_file);
 			stlc2690_info->fw_file = NULL;
@@ -882,7 +901,8 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 
 	op_code = le16_to_cpu(cmd_complete->opcode);
 
-	CG2900_DBG_DATA("Received Command Complete: op_code = 0x%04X", op_code);
+	dev_dbg(MAIN_DEV, "Received Command Complete: op_code = 0x%04X\n",
+		op_code);
 	data += sizeof(*cmd_complete); /* Move to first byte after OCF */
 
 	if (op_code == HCI_OP_RESET)
@@ -911,7 +931,8 @@ static bool handle_rx_data_bt_evt(struct sk_buff *skb)
 static int chip_startup(struct cg2900_chip_dev *dev)
 {
 	/* Start the boot sequence */
-	SET_BOOT_STATE(BOOT_GET_FILES_TO_LOAD);
+	dev_dbg(MAIN_DEV, "New boot_state: BOOT_GET_FILES_TO_LOAD\n");
+	stlc2690_info->boot_state = BOOT_GET_FILES_TO_LOAD;
 	create_work_item(work_load_patch_and_settings, NULL, NULL);
 
 	return 0;
@@ -960,6 +981,8 @@ static int get_h4_channel(char *name, int *h4_channel)
 			/* Device found. Return H4 channel */
 			*h4_channel = stlc2690_channels[i].h4_channel;
 			err = 0;
+			dev_dbg(MAIN_DEV, "%s matches channel %d\n", name,
+				*h4_channel);
 		}
 	}
 
@@ -978,7 +1001,7 @@ static int get_h4_channel(char *name, int *h4_channel)
  */
 static bool check_chip_support(struct cg2900_chip_dev *dev)
 {
-	CG2900_INFO("check_chip_support");
+	dev_dbg(MAIN_DEV, "check_chip_support\n");
 
 	/*
 	 * Check if this is a CG2690 revision. We do not care about
@@ -988,16 +1011,16 @@ static bool check_chip_support(struct cg2900_chip_dev *dev)
 	if ((dev->chip.manufacturer != SUPP_MANUFACTURER) ||
 	    (dev->chip.hci_revision < SUPP_REVISION_MIN) ||
 	    (dev->chip.hci_revision > SUPP_REVISION_MAX)) {
-		CG2900_DBG("Chip not supported by STLC2690 driver\n"
-			   "\tMan: 0x%02X\n"
-			   "\tRev: 0x%04X\n"
-			   "\tSub: 0x%04X",
-			   dev->chip.manufacturer, dev->chip.hci_revision,
-			   dev->chip.hci_sub_version);
+		dev_dbg(MAIN_DEV, "Chip not supported by STLC2690 driver\n"
+			"\tMan: 0x%02X\n"
+			"\tRev: 0x%04X\n"
+			"\tSub: 0x%04X",
+			dev->chip.manufacturer, dev->chip.hci_revision,
+			dev->chip.hci_sub_version);
 		return false;
 	}
 
-	CG2900_INFO("Chip supported by the STLC2690 driver");
+	dev_info(MAIN_DEV, "Chip supported by the STLC2690 driver\n");
 
 	/* Store needed data */
 	dev->user_data = stlc2690_info;
@@ -1030,11 +1053,11 @@ static int __devinit stlc2690_chip_probe(struct platform_device *pdev)
 {
 	int err = 0;
 
-	CG2900_INFO("stlc2690_chip_probe");
+	pr_debug("stlc2690_chip_probe");
 
 	stlc2690_info = kzalloc(sizeof(*stlc2690_info), GFP_ATOMIC);
 	if (!stlc2690_info) {
-		CG2900_ERR("Couldn't allocate stlc2690_info");
+		pr_err("Couldn't allocate stlc2690_info");
 		err = -ENOMEM;
 		goto finished;
 	}
@@ -1043,7 +1066,7 @@ static int __devinit stlc2690_chip_probe(struct platform_device *pdev)
 
 	stlc2690_info->wq = create_singlethread_workqueue(WQ_NAME);
 	if (!stlc2690_info->wq) {
-		CG2900_ERR("Could not create workqueue");
+		dev_err(MAIN_DEV, "Could not create work queue\n");
 		err = -ENOMEM;
 		goto err_handling_free_info;
 	}
@@ -1053,7 +1076,8 @@ static int __devinit stlc2690_chip_probe(struct platform_device *pdev)
 	 */
 	stlc2690_info->patch_file_name = kzalloc(NAME_MAX + 1, GFP_ATOMIC);
 	if (!stlc2690_info->patch_file_name) {
-		CG2900_ERR("Couldn't allocate name buffer for patch file.");
+		dev_err(MAIN_DEV,
+			"Couldn't allocate name buffer for patch file\n");
 		err = -ENOMEM;
 		goto err_handling_destroy_wq;
 	}
@@ -1063,16 +1087,19 @@ static int __devinit stlc2690_chip_probe(struct platform_device *pdev)
 	stlc2690_info->settings_file_name = kzalloc(NAME_MAX + 1,
 						    GFP_ATOMIC);
 	if (!stlc2690_info->settings_file_name) {
-		CG2900_ERR("Couldn't allocate name buffers settings file.");
+		dev_err(MAIN_DEV,
+			"Couldn't allocate name buffers settings file\n");
 		err = -ENOMEM;
 		goto err_handling_free_patch_name;
 	}
 
 	err = cg2900_register_chip_driver(&stlc2690_id_callbacks);
 	if (err) {
-		CG2900_ERR("Couldn't register chip driver (%d)", err);
+		dev_err(MAIN_DEV, "Couldn't register chip driver (%d)\n", err);
 		goto err_handling_free_settings_name;
 	}
+
+	dev_info(MAIN_DEV, "STLC2690 chip driver started\n");
 
 	goto finished;
 
@@ -1098,7 +1125,7 @@ finished:
  */
 static int __devexit stlc2690_chip_remove(struct platform_device *pdev)
 {
-	CG2900_INFO("stlc2690_chip_remove");
+	pr_debug("stlc2690_chip_remove");
 
 	if (!stlc2690_info)
 		return 0;
@@ -1106,6 +1133,9 @@ static int __devexit stlc2690_chip_remove(struct platform_device *pdev)
 	kfree(stlc2690_info->settings_file_name);
 	kfree(stlc2690_info->patch_file_name);
 	destroy_workqueue(stlc2690_info->wq);
+
+	dev_info(MAIN_DEV, "STLC2690 chip driver removed\n");
+
 	kfree(stlc2690_info);
 	stlc2690_info = NULL;
 	return 0;
@@ -1127,7 +1157,7 @@ static struct platform_driver stlc2690_chip_driver = {
  */
 static int __init stlc2690_chip_init(void)
 {
-	CG2900_INFO("stlc2690_chip_init");
+	pr_debug("stlc2690_chip_init");
 	return platform_driver_register(&stlc2690_chip_driver);
 }
 
@@ -1138,7 +1168,7 @@ static int __init stlc2690_chip_init(void)
  */
 static void __exit stlc2690_chip_exit(void)
 {
-	CG2900_INFO("stlc2690_chip_exit");
+	pr_debug("stlc2690_chip_exit");
 	platform_driver_unregister(&stlc2690_chip_driver);
 }
 

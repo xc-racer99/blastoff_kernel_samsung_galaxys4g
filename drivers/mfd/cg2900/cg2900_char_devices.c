@@ -12,6 +12,8 @@
  *
  * Linux Bluetooth HCI H:4 Driver for ST-Ericsson connectivity controller.
  */
+#define NAME					"cg2900_char_dev"
+#define pr_fmt(fmt)				NAME ": " fmt "\n"
 
 #include <linux/device.h>
 #include <linux/fs.h>
@@ -28,9 +30,6 @@
 #include <linux/mfd/cg2900.h>
 
 #include "cg2900_core.h"
-#include "cg2900_debug.h"
-
-#define NAME					"CharDev "
 
 /* Ioctls */
 #define CG2900_CHAR_DEV_IOCTL_RESET		_IOW('U', 210, int)
@@ -41,7 +40,7 @@
 #define CG2900_CHAR_DEV_IOCTL_EVENT_RESET	1
 #define CG2900_CHAR_DEV_IOCTL_EVENT_CLOSED	2
 
-/* Internal type definitions */
+#define MAIN_DEV				(dev->miscdev->parent)
 
 /**
  * enum char_reset_state - Reset state.
@@ -96,19 +95,20 @@ static struct char_info *char_info;
  * @dev:	Device receiving data.
  * @skb:	Buffer with data coming from controller.
  *
- * The char_dev_read_cb() function handles data received from STE-CG2900 driver.
+ * The char_dev_read_cb() function handles data received from the CG2900 driver.
  */
 static void char_dev_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
 {
 	struct char_dev_user *char_dev = (struct char_dev_user *)dev->user_data;
 
-	CG2900_INFO("char_dev_read_cb");
-
 	if (!char_dev) {
-		CG2900_ERR("No char dev! Exiting");
+		pr_err("char_dev_read_cb No char dev! Exiting");
 		kfree_skb(skb);
 		return;
 	}
+
+	dev_dbg(char_dev->miscdev->parent, "char_dev_read_cb len %d\n",
+		skb->len);
 
 	skb_queue_tail(&char_dev->rx_queue, skb);
 
@@ -125,12 +125,12 @@ static void char_dev_reset_cb(struct cg2900_device *dev)
 {
 	struct char_dev_user *char_dev = (struct char_dev_user *)dev->user_data;
 
-	CG2900_INFO("char_dev_reset_cb");
-
 	if (!char_dev) {
-		CG2900_ERR("char_dev == NULL");
+		pr_err("char_dev_reset_cb No char dev! Exiting");
 		return;
 	}
+
+	dev_dbg(char_dev->miscdev->parent, "char_dev_reset_cb\n");
 
 	char_dev->reset_state = CG2900_CHAR_RESET;
 	/*
@@ -181,17 +181,16 @@ static int char_dev_open(struct inode *inode, struct file *filp)
 		}
 	}
 	if (!dev) {
-		CG2900_ERR("Could not identify device in inode");
+		pr_err("Could not identify device in inode");
 		err = -EINVAL;
 		goto error_handling;
 	}
 
 	filp->private_data = dev;
 
-	CG2900_INFO("char_dev_open %s", dev->name);
-
 	if (dev->dev) {
-		CG2900_ERR("Device already registered to CG2900 Driver");
+		dev_err(MAIN_DEV,
+			"Device already registered to CG2900 Driver\n");
 		err = -EACCES;
 		goto error_handling;
 	}
@@ -203,11 +202,13 @@ static int char_dev_open(struct inode *inode, struct file *filp)
 
 	/* Register to CG2900 Driver */
 	dev->dev = cg2900_register_user(dev->name, &char_cb);
-	if (dev->dev)
+	if (dev->dev) {
 		dev->dev->user_data = dev;
-	else {
-		CG2900_ERR("Couldn't register to CG2900 for H:4 channel %s",
-			   dev->name);
+		dev_info(MAIN_DEV, "char_dev %s opened\n", dev->name);
+	} else {
+		dev_err(MAIN_DEV,
+			"Couldn't register to CG2900 for H:4 channel %s\n",
+			dev->name);
 		err = -EACCES;
 	}
 
@@ -232,10 +233,10 @@ static int char_dev_release(struct inode *inode, struct file *filp)
 	int err = 0;
 	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
 
-	CG2900_INFO("char_dev_release");
+	pr_debug("char_dev_release");
 
 	if (!dev) {
-		CG2900_ERR("Calling with NULL pointer");
+		pr_err("Calling with NULL pointer");
 		return -EBADF;
 	}
 
@@ -245,6 +246,8 @@ static int char_dev_release(struct inode *inode, struct file *filp)
 
 	if (dev->reset_state == CG2900_CHAR_IDLE)
 		cg2900_deregister_user(dev->dev);
+
+	dev_info(MAIN_DEV, "char_dev %s closed\n", dev->name);
 
 	dev->dev = NULL;
 	filp->private_data = NULL;
@@ -282,10 +285,10 @@ static ssize_t char_dev_read(struct file *filp, char __user *buf, size_t count,
 	int bytes_to_copy;
 	int err = 0;
 
-	CG2900_INFO("char_dev_read");
+	pr_debug("char_dev_read");
 
 	if (!dev) {
-		CG2900_ERR("Calling with NULL pointer");
+		pr_err("Calling with NULL pointer");
 		return -EBADF;
 	}
 	mutex_lock(&dev->read_mutex);
@@ -296,20 +299,22 @@ static ssize_t char_dev_read(struct file *filp, char __user *buf, size_t count,
 				(CG2900_CHAR_RESET == dev->reset_state) ||
 				(dev->dev == NULL));
 		if (err) {
-			CG2900_ERR("Failed to wait for event");
+			dev_err(MAIN_DEV, "Failed to wait for event\n");
 			goto error_handling;
 		}
 	}
 
 	if (!dev->dev) {
-		CG2900_DBG("dev is empty - return with negative bytes");
+		dev_err(MAIN_DEV,
+			"dev is empty - return with negative bytes\n");
 		err = -EBADF;
 		goto error_handling;
 	}
 
 	skb = skb_dequeue(&dev->rx_queue);
 	if (!skb) {
-		CG2900_DBG("skb queue is empty - return with zero bytes");
+		dev_dbg(MAIN_DEV,
+			"skb queue is empty - return with zero bytes\n");
 		bytes_to_copy = 0;
 		goto finished;
 	}
@@ -318,6 +323,7 @@ static ssize_t char_dev_read(struct file *filp, char __user *buf, size_t count,
 
 	err = copy_to_user(buf, skb->data, bytes_to_copy);
 	if (err) {
+		dev_err(MAIN_DEV, "Error %d from copy_to_user\n", err);
 		skb_queue_head(&dev->rx_queue, skb);
 		err = -EFAULT;
 		goto error_handling;
@@ -359,21 +365,24 @@ static ssize_t char_dev_write(struct file *filp, const char __user *buf,
 	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
 	int err = 0;
 
-	CG2900_INFO("char_dev_write");
+	pr_debug("char_dev_write");
 
 	if (!dev) {
-		CG2900_ERR("Calling with NULL pointer");
+		pr_err("Calling with NULL pointer");
 		return -EBADF;
 	}
 	mutex_lock(&dev->write_mutex);
 
 	skb = cg2900_alloc_skb(count, GFP_ATOMIC);
 	if (!skb) {
-		CG2900_ERR("Couldn't allocate sk_buff with length %d", count);
+		dev_err(MAIN_DEV, "Couldn't allocate sk_buff with length %d\n",
+			count);
 		goto error_handling;
 	}
 
-	if (copy_from_user(skb_put(skb, count), buf, count)) {
+	err = copy_from_user(skb_put(skb, count), buf, count);
+	if (err) {
+		dev_err(MAIN_DEV, "Error %d from copy_from_user\n", err);
 		kfree_skb(skb);
 		err = -EFAULT;
 		goto error_handling;
@@ -381,7 +390,7 @@ static ssize_t char_dev_write(struct file *filp, const char __user *buf,
 
 	err = cg2900_write(dev->dev, skb);
 	if (err) {
-		CG2900_ERR("cg2900_write failed (%d)", err);
+		dev_err(MAIN_DEV, "cg2900_write failed (%d)\n", err);
 		kfree_skb(skb);
 		goto error_handling;
 	}
@@ -414,10 +423,13 @@ static long char_dev_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	struct cg2900_rev_data rev_data;
 	int err = 0;
 
-	CG2900_INFO("char_dev_unlocked_ioctl cmd %d for %s", cmd, dev->name);
-	CG2900_DBG("DIR: %d, TYPE: %d, NR: %d, SIZE: %d",
-		     _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd),
-		     _IOC_SIZE(cmd));
+	pr_debug("char_dev_unlocked_ioctl for %s\n"
+		 "\tDIR: %d\n"
+		 "\tTYPE: %d\n"
+		 "\tNR: %d\n"
+		 "\tSIZE: %d",
+		 dev->name, _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd),
+		 _IOC_SIZE(cmd));
 
 	switch (cmd) {
 	case CG2900_CHAR_DEV_IOCTL_RESET:
@@ -425,51 +437,49 @@ static long char_dev_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			err = -EBADF;
 			goto error_handling;
 		}
-		CG2900_INFO("ioctl reset command for device %s", dev->name);
+		dev_dbg(MAIN_DEV, "ioctl reset command for device %s\n",
+			dev->name);
 		err = cg2900_reset(dev->dev);
 		break;
 
 	case CG2900_CHAR_DEV_IOCTL_CHECK4RESET:
 		if (!dev) {
-			CG2900_INFO("ioctl check for reset command for device");
+			pr_debug("ioctl check for reset command for device");
 			/* Return positive value if closed */
 			err = CG2900_CHAR_DEV_IOCTL_EVENT_CLOSED;
 		} else if (dev->reset_state == CG2900_CHAR_RESET) {
-			CG2900_INFO("ioctl check for reset command for device "
-				    "%s", dev->name);
+			dev_dbg(MAIN_DEV,
+				"ioctl check for reset command for device "
+				"%s", dev->name);
 			/* Return positive value if reset */
 			err = CG2900_CHAR_DEV_IOCTL_EVENT_RESET;
 		}
 		break;
 
 	case CG2900_CHAR_DEV_IOCTL_GET_REVISION:
-		CG2900_INFO("ioctl check for local revision info");
 		if (cg2900_get_local_revision(&rev_data)) {
-			CG2900_DBG("Read revision data revision %d "
-				   "sub_version %d",
-				   rev_data.revision, rev_data.sub_version);
+			pr_debug("ioctl check for local revision info\n"
+				 "\trevision 0x%04X", rev_data.revision);
 			err = rev_data.revision;
 		} else {
-			CG2900_DBG("No revision data available");
+			pr_debug("No revision data available");
 			err = -EIO;
 		}
 		break;
 
 	case CG2900_CHAR_DEV_IOCTL_GET_SUB_VER:
-		CG2900_INFO("ioctl check for local sub-version info");
 		if (cg2900_get_local_revision(&rev_data)) {
-			CG2900_DBG("Read revision data revision %d "
-				   "sub_version %d",
-				   rev_data.revision, rev_data.sub_version);
+			pr_debug("ioctl check for local sub-version info\n"
+				 "\tsub_version 0x%04X", rev_data.sub_version);
 			err = rev_data.sub_version;
 		} else {
-			CG2900_DBG("No revision data available");
+			pr_debug("No revision data available");
 			err = -EIO;
 		}
 		break;
 
 	default:
-		CG2900_ERR("Unknown ioctl command %08X", cmd);
+		pr_err("Unknown ioctl command %08X", cmd);
 		err = -EINVAL;
 		break;
 	};
@@ -492,7 +502,7 @@ static unsigned int char_dev_poll(struct file *filp, poll_table *wait)
 	unsigned int mask = 0;
 
 	if (!dev) {
-		CG2900_DBG("Device not open");
+		pr_debug("Device not open");
 		return POLLERR | POLLRDHUP;
 	}
 
@@ -550,11 +560,9 @@ static int setup_dev(struct device *parent, char *name)
 	int err = 0;
 	struct char_dev_user *dev_usr;
 
-	CG2900_INFO(NAME "setup_dev");
-
 	dev_usr = kzalloc(sizeof(*dev_usr), GFP_KERNEL);
 	if (!dev_usr) {
-		CG2900_ERR("Couldn't allocate dev_usr");
+		dev_err(parent, "Couldn't allocate dev_usr\n");
 		return -ENOMEM;
 	}
 
@@ -564,7 +572,7 @@ static int setup_dev(struct device *parent, char *name)
 	dev_usr->miscdev = kzalloc(sizeof(*(dev_usr->miscdev)),
 				       GFP_KERNEL);
 	if (!dev_usr->miscdev) {
-		CG2900_ERR("Couldn't allocate char_dev");
+		dev_err(parent, "Couldn't allocate char_dev\n");
 		err = -ENOMEM;
 		goto err_free_usr;
 	}
@@ -577,13 +585,13 @@ static int setup_dev(struct device *parent, char *name)
 
 	err = misc_register(dev_usr->miscdev);
 	if (err) {
-		CG2900_ERR("Error %d registering misc dev!", err);
+		dev_err(parent, "Error %d registering misc dev\n", err);
 		goto err_free_dev;
 	}
 
-	CG2900_INFO("Added char device %s with major 0x%X and minor 0x%X",
-		    name, MAJOR(dev_usr->miscdev->this_device->devt),
-		    MINOR(dev_usr->miscdev->this_device->devt));
+	dev_dbg(parent, "Added char device %s with major %d and minor %d\n",
+		name, MAJOR(dev_usr->miscdev->this_device->devt),
+		MINOR(dev_usr->miscdev->this_device->devt));
 
 	mutex_init(&dev_usr->read_mutex);
 	mutex_init(&dev_usr->write_mutex);
@@ -609,10 +617,14 @@ err_free_usr:
  */
 static void remove_dev(struct char_dev_user *dev_usr)
 {
-	CG2900_INFO(NAME "remove_dev");
-
 	if (!dev_usr)
 		return;
+
+	dev_dbg(dev_usr->miscdev->parent,
+		"Removing char device %s with major %d and minor %d\n",
+		dev_usr->miscdev->name,
+		MAJOR(dev_usr->miscdev->this_device->devt),
+		MINOR(dev_usr->miscdev->this_device->devt));
 
 	skb_queue_purge(&dev_usr->rx_queue);
 
@@ -640,19 +652,19 @@ static int __devinit cg2900_char_probe(struct platform_device *pdev)
 {
 	struct device *parent;
 
-	CG2900_INFO("cg2900_char_probe");
+	dev_dbg(&pdev->dev, "cg2900_char_probe\n");
 
 	if (char_info) {
-		CG2900_ERR("Char devices already initiated");
+		dev_err(&pdev->dev, "Char devices already initiated\n");
 		return -EACCES;
 	}
 
-	parent = pdev->dev.parent;
+	parent = &pdev->dev;
 
 	/* Initialize private data. */
 	char_info = kzalloc(sizeof(*char_info), GFP_ATOMIC);
 	if (!char_info) {
-		CG2900_ERR("Could not alloc char_info struct.");
+		dev_err(&pdev->dev, "Could not alloc char_info struct\n");
 		return -ENOMEM;
 	}
 
@@ -672,6 +684,8 @@ static int __devinit cg2900_char_probe(struct platform_device *pdev)
 	setup_dev(parent, CG2900_FM_RADIO_AUDIO);
 	setup_dev(parent, CG2900_CORE);
 
+	dev_info(&pdev->dev, "CG2900 char dev started\n");
+
 	return 0;
 }
 
@@ -687,7 +701,7 @@ static int __devexit cg2900_char_remove(struct platform_device *pdev)
 	struct list_head *cursor, *next;
 	struct char_dev_user *tmp;
 
-	CG2900_INFO("cg2900_char_remove");
+	dev_dbg(&pdev->dev, "cg2900_char_remove\n");
 
 	if (!char_info)
 		return 0;
@@ -702,6 +716,8 @@ static int __devexit cg2900_char_remove(struct platform_device *pdev)
 
 	kfree(char_info);
 	char_info = NULL;
+
+	dev_info(&pdev->dev, "CG2900 char dev removed\n");
 	return 0;
 }
 
@@ -721,7 +737,7 @@ static struct platform_driver cg2900_char_driver = {
  */
 static int __init cg2900_char_init(void)
 {
-	CG2900_INFO("cg2900_char_init");
+	pr_debug("cg2900_char_init");
 	return platform_driver_register(&cg2900_char_driver);
 }
 
@@ -732,7 +748,7 @@ static int __init cg2900_char_init(void)
  */
 static void __exit cg2900_char_exit(void)
 {
-	CG2900_INFO("cg2900_char_exit");
+	pr_debug("cg2900_char_exit");
 	platform_driver_unregister(&cg2900_char_driver);
 }
 
