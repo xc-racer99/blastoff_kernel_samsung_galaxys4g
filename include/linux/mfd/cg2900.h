@@ -82,6 +82,35 @@
 struct cg2900_callbacks;
 
 /**
+ * struct cg2900_trans_dev - CG2900 transport info structure.
+ * @dev:	Parent device from CG2900 Core.
+ * @user_data:	Arbitrary data set by chip handler.
+ */
+struct cg2900_trans_dev {
+	struct device	*dev;
+	void		*user_data;
+};
+
+/**
+ * struct cg2900_trans_callbacks - Callback functions registered by transport.
+ * @open:		CG2900 Core needs a transport.
+ * @close:		CG2900 Core does not need a transport.
+ * @write:		CG2900 Core transmits to the chip.
+ * @set_chip_power:	CG2900 Core enables or disables the chip.
+ * @chip_startup_finished:	CG2900 Chip startup finished notification.
+ *
+ * Note that some callbacks may be NULL. They must always be NULL checked before
+ * calling.
+ */
+struct cg2900_trans_callbacks {
+	int (*open)(struct cg2900_trans_dev *dev);
+	int (*close)(struct cg2900_trans_dev *dev);
+	int (*write)(struct cg2900_trans_dev *dev, struct sk_buff *skb);
+	void (*set_chip_power)(struct cg2900_trans_dev *dev, bool chip_on);
+	void (*chip_startup_finished)(struct cg2900_trans_dev *dev);
+};
+
+/**
  * struct cg2900_device - Device structure for CG2900 user.
  * @h4_channel:		HCI H:4 channel used by this device.
  * @cb:			Callback functions registered by this device.
@@ -183,5 +212,12 @@ extern int cg2900_reset(struct cg2900_device *dev);
 extern struct sk_buff *cg2900_alloc_skb(unsigned int size, gfp_t priority);
 extern int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb);
 extern bool cg2900_get_local_revision(struct cg2900_rev_data *rev_data);
+extern unsigned long cg2900_get_sleep_timeout(void);
+extern int cg2900_register_trans_driver(struct device *dev,
+					struct cg2900_trans_callbacks *cb,
+					void *data);
+extern int cg2900_deregister_trans_driver(void);
+extern unsigned long cg2900_get_sleep_timeout(void);
+extern void cg2900_data_from_chip(struct sk_buff *skb);
 
 #endif /* _CG2900_H_ */

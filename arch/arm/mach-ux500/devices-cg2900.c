@@ -68,6 +68,7 @@ struct vs_power_sw_off_cmd {
 
 static u16 cg2900_hci_revision;
 
+#ifdef CONFIG_MFD_CG2900_UART
 /* Pin configuration for UART functions. */
 static pin_cfg_t uart0_enabled[] = {
 	GPIO0_U0_CTSn   | PIN_INPUT_PULLUP,
@@ -80,9 +81,10 @@ static pin_cfg_t uart0_enabled[] = {
 static pin_cfg_t uart0_disabled[] = {
 	GPIO0_GPIO   | PIN_INPUT_PULLUP,	/* CTS pull up. */
 	GPIO1_GPIO   | PIN_OUTPUT_HIGH,		/* RTS high - flow off. */
-	GPIO2_GPIO   | PIN_INPUT_PULLUP,	/* RX pull down. */
+	GPIO2_GPIO   | PIN_INPUT_PULLUP,	/* RX pull up. */
 	GPIO3_GPIO   | PIN_OUTPUT_LOW		/* TX low - break on. */
 };
+#endif /* CONFIG_MFD_CG2900_UART */
 
 static void cg2900_enable_chip(void)
 {

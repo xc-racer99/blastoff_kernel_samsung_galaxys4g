@@ -878,7 +878,7 @@ static void chip_shutdown(void)
 
 	/* First do a quick power switch of the chip to assure a good state */
 	if (trans_info && trans_info->cb.set_chip_power)
-		trans_info->cb.set_chip_power(false);
+		trans_info->cb.set_chip_power(&trans_info->dev, false);
 
 	/*
 	 * Wait 50ms before continuing to be sure that the chip detects
@@ -888,7 +888,7 @@ static void chip_shutdown(void)
 			msecs_to_jiffies(LINE_TOGGLE_DETECT_TIMEOUT));
 
 	if (trans_info && trans_info->cb.set_chip_power)
-		trans_info->cb.set_chip_power(true);
+		trans_info->cb.set_chip_power(&trans_info->dev, true);
 
 	/* Wait 100ms before continuing to be sure that the chip is ready */
 	schedule_timeout_interruptible(msecs_to_jiffies(CHIP_READY_TIMEOUT));
@@ -1140,7 +1140,7 @@ static int test_char_dev_open(struct inode *inode, struct file *filp)
 	};
 
 	dev_info(MAIN_DEV, "CG2900 test char dev opened\n");
-	return cg2900_register_trans_driver(&cb, NULL);
+	return cg2900_register_trans_driver(NULL, &cb, NULL);
 }
 
 /**
@@ -1473,7 +1473,7 @@ static void work_hw_registered(struct work_struct *work)
 	 * the revision info in order to be able to shutdown the chip properly.
 	 */
 	if (trans_info && trans_info->cb.set_chip_power)
-		trans_info->cb.set_chip_power(true);
+		trans_info->cb.set_chip_power(&trans_info->dev, true);
 
 	/* Wait 100ms before continuing to be sure that the chip is ready */
 	schedule_timeout_interruptible(msecs_to_jiffies(CHIP_READY_TIMEOUT));
@@ -1613,7 +1613,7 @@ struct cg2900_device *cg2900_register_user(char  *name,
 	    core_info->users.nbr_of_users == 1) {
 		/* Open transport and start-up the chip */
 		if (trans_info && trans_info->cb.set_chip_power)
-			trans_info->cb.set_chip_power(true);
+			trans_info->cb.set_chip_power(&trans_info->dev, true);
 
 		/* Wait 100ms to be sure that the chip is ready */
 		schedule_timeout_interruptible(
@@ -1628,7 +1628,8 @@ struct cg2900_device *cg2900_register_user(char  *name,
 			remove_h4_user(&current_dev);
 
 			if (trans_info && trans_info->cb.set_chip_power)
-				trans_info->cb.set_chip_power(false);
+				trans_info->cb.set_chip_power(&trans_info->dev,
+									false);
 			goto finished;
 		}
 
@@ -1912,6 +1913,15 @@ bool cg2900_get_local_revision(struct cg2900_rev_data *rev_data)
 }
 EXPORT_SYMBOL(cg2900_get_local_revision);
 
+/**
+ * cg2900_register_chip_driver() - Register a chip handler.
+ * @cb:	Callbacks to call when chip is connected.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL if NULL is supplied as @cb.
+ *   -ENOMEM if allocation fails or work queue can't be created.
+ */
 int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb)
 {
 	struct chip_handler_item *item;
@@ -1937,7 +1947,19 @@ int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb)
 }
 EXPORT_SYMBOL(cg2900_register_chip_driver);
 
-int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
+/**
+ * cg2900_register_trans_driver() - Register a transport driver.
+ * @dev:	Pointer to device.
+ * @cb:		Callbacks to call when chip is connected.
+ * @data:	Arbitrary data used by the transport driver.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL if NULL is supplied as @cb.
+ *   -ENOMEM if allocation fails or work queue can't be created.
+ */
+int cg2900_register_trans_driver(struct device *dev,
+				struct cg2900_trans_callbacks *cb, void *data)
 {
 	int err;
 
@@ -1958,7 +1980,11 @@ int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
 	}
 
 	memcpy(&(core_info->trans_info->cb), cb, sizeof(*cb));
-	core_info->trans_info->dev.dev = core_info->dev;
+	if (dev)
+		core_info->trans_info->dev.dev = dev;
+	else
+		core_info->trans_info->dev.dev = core_info->dev;
+
 	core_info->trans_info->dev.user_data = data;
 
 	err = create_work_item(core_info->wq, work_hw_registered, NULL);
@@ -1971,6 +1997,14 @@ int cg2900_register_trans_driver(struct cg2900_trans_callbacks *cb, void *data)
 }
 EXPORT_SYMBOL(cg2900_register_trans_driver);
 
+/**
+ * cg2900_deregister_trans_driver() - Deregister a transport driver.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -EINVAL if NULL is supplied as @cb.
+ *   -ENOMEM if allocation fails or work queue can't be created.
+ */
 int cg2900_deregister_trans_driver(void)
 {
 	BUG_ON(!core_info);
@@ -1992,6 +2026,13 @@ int cg2900_deregister_trans_driver(void)
 }
 EXPORT_SYMBOL(cg2900_deregister_trans_driver);
 
+/**
+ * cg2900_chip_startup_finished() - Called from chip handler when start-up is finished.
+ * @err:	Result of the start-up.
+ *
+ * Returns:
+ *   0 if there is no error.
+ */
 int cg2900_chip_startup_finished(int err)
 {
 	dev_dbg(MAIN_DEV, "cg2900_chip_startup_finished (%d)\n", err);
@@ -2008,12 +2049,21 @@ int cg2900_chip_startup_finished(int err)
 
 	if (!core_info->trans_info->cb.chip_startup_finished)
 		dev_err(MAIN_DEV, "chip_startup_finished callback not found\n");
-	else
-		core_info->trans_info->cb.chip_startup_finished();
+	else {
+		struct trans_info *trans_info = core_info->trans_info;
+		trans_info->cb.chip_startup_finished(&trans_info->dev);
+	}
 	return 0;
 }
 EXPORT_SYMBOL(cg2900_chip_startup_finished);
 
+/**
+ * cg2900_chip_shutdown_finished() - Called from chip handler when shutdown is finished.
+ * @err:	Result of the shutdown.
+ *
+ * Returns:
+ *   0 if there is no error.
+ */
 int cg2900_chip_shutdown_finished(int err)
 {
 	dev_dbg(MAIN_DEV, "cg2900_chip_shutdown_finished (%d)\n", err);
@@ -2030,6 +2080,14 @@ int cg2900_chip_shutdown_finished(int err)
 }
 EXPORT_SYMBOL(cg2900_chip_shutdown_finished);
 
+/**
+ * cg2900_send_to_chip() - Send data to chip.
+ * @skb:	Packet to transmit.
+ * @use_logger:	true if hci_logger should copy data content.
+ *
+ * Returns:
+ *   0 if there is no error.
+ */
 int cg2900_send_to_chip(struct sk_buff *skb, bool use_logger)
 {
 	transmit_skb_to_chip(skb, use_logger);
@@ -2037,6 +2095,13 @@ int cg2900_send_to_chip(struct sk_buff *skb, bool use_logger)
 }
 EXPORT_SYMBOL(cg2900_send_to_chip);
 
+/**
+ * cg2900_get_bt_cmd_dev() - Return user of the BT command H:4 channel.
+ *
+ * Returns:
+ *   User of the BT command H:4 channel.
+ *   NULL if no user is registered.
+ */
 struct cg2900_device *cg2900_get_bt_cmd_dev(void)
 {
 	if (core_info)
@@ -2046,6 +2111,13 @@ struct cg2900_device *cg2900_get_bt_cmd_dev(void)
 }
 EXPORT_SYMBOL(cg2900_get_bt_cmd_dev);
 
+/**
+ * cg2900_get_fm_radio_dev() - Return user of the FM radio H:4 channel.
+ *
+ * Returns:
+ *   User of the FM radio H:4 channel.
+ *   NULL if no user is registered.
+ */
 struct cg2900_device *cg2900_get_fm_radio_dev(void)
 {
 	if (core_info)
@@ -2055,6 +2127,13 @@ struct cg2900_device *cg2900_get_fm_radio_dev(void)
 }
 EXPORT_SYMBOL(cg2900_get_fm_radio_dev);
 
+/**
+ * cg2900_get_bt_audio_dev() - Return user of the BT audio H:4 channel.
+ *
+ * Returns:
+ *   User of the BT audio H:4 channel.
+ *   NULL if no user is registered.
+ */
 struct cg2900_device *cg2900_get_bt_audio_dev(void)
 {
 	if (core_info)
@@ -2064,6 +2143,13 @@ struct cg2900_device *cg2900_get_bt_audio_dev(void)
 }
 EXPORT_SYMBOL(cg2900_get_bt_audio_dev);
 
+/**
+ * cg2900_get_fm_audio_dev() - Return user of the FM audio H:4 channel.
+ *
+ * Returns:
+ *   User of the FM audio H:4 channel.
+ *   NULL if no user is registered.
+ */
 struct cg2900_device *cg2900_get_fm_audio_dev(void)
 {
 	if (core_info)
@@ -2073,6 +2159,13 @@ struct cg2900_device *cg2900_get_fm_audio_dev(void)
 }
 EXPORT_SYMBOL(cg2900_get_fm_audio_dev);
 
+/**
+ * cg2900_get_hci_logger_config() - Return HCI Logger configuration.
+ *
+ * Returns:
+ *   HCI logger configuration.
+ *   NULL if CG2900 Core has not yet been started.
+ */
 struct cg2900_hci_logger_config *cg2900_get_hci_logger_config(void)
 {
 	if (core_info)
@@ -2082,6 +2175,12 @@ struct cg2900_hci_logger_config *cg2900_get_hci_logger_config(void)
 }
 EXPORT_SYMBOL(cg2900_get_hci_logger_config);
 
+/**
+ * cg2900_get_sleep_timeout() - Return sleep timeout in jiffies.
+ *
+ * Returns:
+ *   Sleep timeout in jiffies. 0 means that sleep timeout shall not be used.
+ */
 unsigned long cg2900_get_sleep_timeout(void)
 {
 	if (CORE_ACTIVE != core_info->main_state || !sleep_timeout_ms)
@@ -2091,6 +2190,13 @@ unsigned long cg2900_get_sleep_timeout(void)
 }
 EXPORT_SYMBOL(cg2900_get_sleep_timeout);
 
+/**
+ * cg2900_data_from_chip() - Data received from connectivity controller.
+ * @skb: Data packet
+ *
+ * The cg2900_data_from_chip() function checks which channel
+ * the data was received on and send to the right user.
+ */
 void cg2900_data_from_chip(struct sk_buff *skb)
 {
 	struct cg2900_device *dev = NULL;
