@@ -1,6 +1,4 @@
 /*
- * include/linux/mfd/cg2900_audio.h
- *
  * Copyright (C) ST-Ericsson SA 2010
  * Authors:
  * Par-Gunnar Hjalmdahl (par-gunnar.p.hjalmdahl@stericsson.com) for ST-Ericsson.
@@ -22,7 +20,17 @@
 /** CG2900_A2DP_MAX_AVDTP_HDR_LEN - Max length of a AVDTP header.
  * Max length of a AVDTP header for an A2DP packet.
  */
-#define CG2900_A2DP_MAX_AVDTP_HDR_LEN	25
+#define CG2900_A2DP_MAX_AVDTP_HDR_LEN		25
+
+/*
+ * Op codes used when writing commands to the audio interface from user space
+ * using the char device.
+ */
+#define CG2900_OPCODE_SET_DAI_CONF		0x01
+#define CG2900_OPCODE_GET_DAI_CONF		0x02
+#define CG2900_OPCODE_CONFIGURE_ENDPOINT	0x03
+#define CG2900_OPCODE_START_STREAM		0x04
+#define CG2900_OPCODE_STOP_STREAM		0x05
 
 /**
  * enum cg2900_dai_dir - Contains the DAI port directions alternatives.
@@ -442,7 +450,11 @@ struct cg2900_endpoint_config {
 	union cg2900_endpoint_config_union	config;
 };
 
-int cg2900_audio_open(unsigned int *session);
+#ifdef __KERNEL__
+#include <linux/device.h>
+
+int cg2900_audio_get_devices(struct device *devices[], __u8 size);
+int cg2900_audio_open(unsigned int *session, struct device *parent);
 int cg2900_audio_close(unsigned int *session);
 int cg2900_audio_set_dai_config(unsigned int session,
 				struct cg2900_dai_config *config);
@@ -457,4 +469,5 @@ int cg2900_audio_start_stream(unsigned int session,
 int cg2900_audio_stop_stream(unsigned int session,
 			     unsigned int stream_handle);
 
+#endif /* __KERNEL__ */
 #endif /* _CG2900_AUDIO_H_ */

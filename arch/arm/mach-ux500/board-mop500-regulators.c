@@ -520,7 +520,7 @@ struct regulator_init_data u8500_vsmps1_regulator = {
 /* vsmsp2 regulator configuration */
 static struct regulator_consumer_supply u8500_vsmps2_consumers[] = {
 	{
-		.dev_name = "cg2900.0",
+		.dev_name = "cg2900-uart.0",
 		.supply = "gbf_1v8",
 	},
 	{

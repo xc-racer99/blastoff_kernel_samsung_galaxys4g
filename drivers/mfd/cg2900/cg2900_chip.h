@@ -1,6 +1,4 @@
 /*
- * drivers/mfd/cg2900/cg2900_chip.h
- *
  * Copyright (C) ST-Ericsson SA 2010
  * Authors:
  * Par-Gunnar Hjalmdahl (par-gunnar.p.hjalmdahl@stericsson.com) for ST-Ericsson.

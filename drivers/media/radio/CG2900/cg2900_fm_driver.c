@@ -8,6 +8,7 @@
  * License terms: GNU General Public License (GPL), version 2
  */
 
+#include <linux/device.h>
 #include <linux/time.h>
 #include <linux/mfd/cg2900.h>
 #include <linux/module.h>
@@ -236,7 +237,7 @@ static struct semaphore rds_sem;
 static struct semaphore interrupt_sem;
 static struct task_struct *rds_thread_task;
 static struct task_struct *irq_thread_task;
-static struct cg2900_device *cg2900_fm_cmd_evt;
+static struct device *cg2900_fm_dev;
 static struct mutex write_mutex;
 static struct mutex send_cmd_mutex;
 static struct mutex read_mutex;
@@ -383,23 +384,8 @@ static void fmd_set_interrupt_sem(void);
 static bool fmd_driver_init(void);
 static void fmd_driver_exit(void);
 
-static void fmd_read_cb(
-			struct cg2900_device *dev,
-			struct sk_buff *skb
-			);
-
-static void fmd_reset_cb(
-			struct cg2900_device *dev
-			);
-
 /* structure declared in time.h */
 struct timespec time_spec;
-
-/* Callback structure for cg2900 user */
-static struct cg2900_callbacks cg2900_fm_cb = {
-	.read_cb = fmd_read_cb,
-	.reset_cb = fmd_reset_cb
-};
 
 
 /**
@@ -1030,7 +1016,7 @@ static bool fmd_go_cmd_busy(void)
  * @skb: Buffer with data coming form device.
  */
 static void fmd_read_cb(
-			struct cg2900_device *dev,
+			struct cg2900_user_data *dev,
 			struct sk_buff *skb
 			)
 {
@@ -1143,7 +1129,7 @@ static void fmd_receive_data(
  *
  * @dev: CPD device reseting.
  */
-static void fmd_reset_cb(struct cg2900_device *dev)
+static void fmd_reset_cb(struct cg2900_user_data *dev)
 {
 	FM_INFO_REPORT("fmd_reset_cb: Device Reset");
 	cg2900_handle_device_reset();
@@ -1269,6 +1255,7 @@ static int fmd_send_packet(
 {
 	int err;
 	struct sk_buff *skb;
+	struct cg2900_user_data *pf_data;
 
 	FM_INFO_REPORT("fmd_send_packet");
 
@@ -1277,30 +1264,37 @@ static int fmd_send_packet(
 		goto error;
 	}
 
-	if (cg2900_fm_cmd_evt == NULL) {
-		FM_ERR_REPORT("fmd_send_packet: FM Driver is not "\
-			"registered with protocol driver");
+	if (!cg2900_fm_dev) {
+		FM_ERR_REPORT("fmd_send_packet: No FM device registered");
+		err = -EIO;
+		goto error;
+	}
+
+	pf_data = dev_get_platdata(cg2900_fm_dev);
+	if (!pf_data->opened) {
+		FM_ERR_REPORT("fmd_send_packet: FM channel is not opened");
 		err = -EIO;
 		goto error;
 	}
 
 	mutex_lock(&write_mutex);
 	CG2900_HEX_WRITE_PACKET_DUMP;
-	skb = cg2900_alloc_skb(num_bytes, GFP_KERNEL);
 
+	skb = pf_data->alloc_skb(num_bytes, GFP_KERNEL);
 	if (!skb) {
 		FM_ERR_REPORT("fmd_send_packet:Couldn't " \
 			"allocate sk_buff with length %d", num_bytes);
 		err = -EIO;
 		goto error;
 	}
+
 	/*
 	 * Copy the buffer removing the FM Header as this
 	 * would be done by Protocol Driver
 	 */
 	memcpy(skb_put(skb, num_bytes), send_buffer, num_bytes);
-	err = cg2900_write(cg2900_fm_cmd_evt, skb);
 
+	err = pf_data->write(pf_data, skb);
 	if (err) {
 		FM_ERR_REPORT("fmd_send_packet: "
 		"Failed to send(%d) bytes using "
@@ -1398,8 +1392,17 @@ static bool fmd_driver_init(void)
 {
 	bool ret_val;
 	struct cg2900_rev_data rev_data;
+	struct cg2900_user_data *pf_data;
+	int err;
 
 	FM_INFO_REPORT("fmd_driver_init");
+
+	if (!cg2900_fm_dev) {
+		FM_ERR_REPORT("No device registered");
+		ret_val = false;
+		goto error;
+	}
+
 	/* Initialize the semaphores */
 	sema_init(&cmd_sem, 0);
 	sema_init(&rds_sem, 0);
@@ -1407,7 +1410,9 @@ static bool fmd_driver_init(void)
 	cb_rds_func = NULL;
 	rds_thread_required = false;
 	irq_thread_required = true;
-	cg2900_fm_cmd_evt = NULL;
+
+	pf_data = dev_get_platdata(cg2900_fm_dev);
+
 	/* Create Mutex For Reading and Writing */
 	mutex_init(&read_mutex);
 	mutex_init(&write_mutex);
@@ -1415,20 +1420,17 @@ static bool fmd_driver_init(void)
 	spin_lock_init(&fmd_spinlock);
 	fmd_start_irq_thread();
 
-	/* Register the FM Driver with Connectivity Protocol Driver */
-	cg2900_fm_cmd_evt = cg2900_register_user(
-		CG2900_FM_RADIO, &cg2900_fm_cb);
-
-	if (!cg2900_fm_cmd_evt) {
+	/* Open the FM channel */
+	err = pf_data->open(pf_data);
+	if (err) {
 		FM_ERR_REPORT("fmd_driver_init: "
-			"Couldn't register CG2900_FM_RADIO to Protocol Driver."
-			"Either chip is not connected or "
-			"Protocol Driver is not initialized");
+			"Couldn't open FM channel. Either chip is not connected"
+			" or Protocol Driver is not initialized");
 		ret_val = false;
 		goto error;
 	}
 
-	if (!cg2900_get_local_revision(&rev_data)) {
+	if (!pf_data->get_local_revision(pf_data, &rev_data)) {
 		FM_DEBUG_REPORT("No revision data available");
 		ret_val = false;
 		goto error;
@@ -1453,15 +1455,18 @@ error:
  */
 static void fmd_driver_exit(void)
 {
+	struct cg2900_user_data *pf_data;
+
 	FM_INFO_REPORT("fmd_driver_exit");
 	irq_thread_required = false;
 	mutex_destroy(&write_mutex);
 	mutex_destroy(&read_mutex);
 	mutex_destroy(&send_cmd_mutex);
 	fmd_stop_irq_thread();
-	/* Deregister the FM Driver with Connectivity Protocol Driver */
-	if (cg2900_fm_cmd_evt != NULL)
-		cg2900_deregister_user(cg2900_fm_cmd_evt);
+	/* Close the FM channel */
+	pf_data = dev_get_platdata(cg2900_fm_dev);
+	if (pf_data->opened)
+		pf_data->close(pf_data);
 }
 
 /**
@@ -4587,6 +4592,30 @@ void fmd_set_rds_sem(void)
 {
 	FM_DEBUG_REPORT("fmd_set_rds_sem");
 	up(&rds_sem);
+}
+
+int fmd_set_dev(struct device *dev)
+{
+	struct cg2900_user_data *pf_data;
+
+	FM_DEBUG_REPORT("fmd_set_dev");
+
+	if (dev && cg2900_fm_dev) {
+		FM_ERR_REPORT("Only one FM device supported");
+		return -EACCES;
+	}
+
+	cg2900_fm_dev = dev;
+
+	if (!dev)
+		return 0;
+
+	pf_data = dev_get_platdata(dev);
+	pf_data->dev = dev;
+	pf_data->read_cb = fmd_read_cb;
+	pf_data->reset_cb = fmd_reset_cb;
+
+	return 0;
 }
 
 MODULE_AUTHOR("Hemant Gupta");

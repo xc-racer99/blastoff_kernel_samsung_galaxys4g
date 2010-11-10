@@ -1,6 +1,4 @@
 /*
- * include/linux/mfd/cg2900.h
- *
  * Copyright (C) ST-Ericsson SA 2010
  * Authors:
  * Par-Gunnar Hjalmdahl (par-gunnar.p.hjalmdahl@stericsson.com) for ST-Ericsson.
@@ -17,131 +15,18 @@
 #ifndef _CG2900_H_
 #define _CG2900_H_
 
-#include <linux/skbuff.h>
+#include <linux/types.h>
 
-#define CG2900_MAX_NAME_SIZE 30
+/* Perform reset. No parameters used */
+#define CG2900_CHAR_DEV_IOCTL_RESET		_IOW('U', 210, int)
+/* Check for reset */
+#define CG2900_CHAR_DEV_IOCTL_CHECK4RESET	_IOR('U', 212, int)
+/* Retrieve revision info */
+#define CG2900_CHAR_DEV_IOCTL_GET_REVISION	_IOR('U', 213, \
+						     struct cg2900_rev_data)
 
-/*
- * Channel names to use when registering to CG2900 driver
- */
-
-/** CG2900_BT_CMD - Bluetooth HCI H4 channel for Bluetooth commands.
- */
-#define CG2900_BT_CMD		"cg2900_bt_cmd"
-
-/** CG2900_BT_ACL - Bluetooth HCI H4 channel for Bluetooth ACL data.
- */
-#define CG2900_BT_ACL		"cg2900_bt_acl"
-
-/** CG2900_BT_EVT - Bluetooth HCI H4 channel for Bluetooth events.
- */
-#define CG2900_BT_EVT		"cg2900_bt_evt"
-
-/** CG2900_FM_RADIO - Bluetooth HCI H4 channel for FM radio.
- */
-#define CG2900_FM_RADIO		"cg2900_fm_radio"
-
-/** CG2900_GNSS - Bluetooth HCI H4 channel for GNSS.
- */
-#define CG2900_GNSS		"cg2900_gnss"
-
-/** CG2900_DEBUG - Bluetooth HCI H4 channel for internal debug data.
- */
-#define CG2900_DEBUG		"cg2900_debug"
-
-/** CG2900_STE_TOOLS - Bluetooth HCI H4 channel for development tools data.
- */
-#define CG2900_STE_TOOLS	"cg2900_ste_tools"
-
-/** CG2900_HCI_LOGGER - BT channel for logging all transmitted H4 packets.
- * Data read is copy of all data transferred on the other channels.
- * Only write allowed is configuration of the HCI Logger.
- */
-#define CG2900_HCI_LOGGER	"cg2900_hci_logger"
-
-/** CG2900_US_CTRL - Channel for user space init and control of CG2900.
- */
-#define CG2900_US_CTRL		"cg2900_us_ctrl"
-
-/** CG2900_BT_AUDIO - HCI Channel for BT audio configuration commands.
- * Maps to Bluetooth command and event channels.
- */
-#define CG2900_BT_AUDIO		"cg2900_bt_audio"
-
-/** CG2900_FM_RADIO_AUDIO - HCI channel for FM audio configuration commands.
- * Maps to FM Radio channel.
- */
-#define CG2900_FM_RADIO_AUDIO	"cg2900_fm_audio"
-
-/** CG2900_CORE- Channel for keeping ST-Ericsson CG2900 enabled.
- * Opening this channel forces the chip to stay powered.
- * No data can be written to or read from this channel.
- */
-#define CG2900_CORE		"cg2900_core"
-
-struct cg2900_callbacks;
-
-/**
- * struct cg2900_trans_dev - CG2900 transport info structure.
- * @dev:	Parent device from CG2900 Core.
- * @user_data:	Arbitrary data set by chip handler.
- */
-struct cg2900_trans_dev {
-	struct device	*dev;
-	void		*user_data;
-};
-
-/**
- * struct cg2900_trans_callbacks - Callback functions registered by transport.
- * @open:		CG2900 Core needs a transport.
- * @close:		CG2900 Core does not need a transport.
- * @write:		CG2900 Core transmits to the chip.
- * @set_chip_power:	CG2900 Core enables or disables the chip.
- * @chip_startup_finished:	CG2900 Chip startup finished notification.
- *
- * Note that some callbacks may be NULL. They must always be NULL checked before
- * calling.
- */
-struct cg2900_trans_callbacks {
-	int (*open)(struct cg2900_trans_dev *dev);
-	int (*close)(struct cg2900_trans_dev *dev);
-	int (*write)(struct cg2900_trans_dev *dev, struct sk_buff *skb);
-	void (*set_chip_power)(struct cg2900_trans_dev *dev, bool chip_on);
-	void (*chip_startup_finished)(struct cg2900_trans_dev *dev);
-};
-
-/**
- * struct cg2900_device - Device structure for CG2900 user.
- * @h4_channel:		HCI H:4 channel used by this device.
- * @cb:			Callback functions registered by this device.
- * @logger_enabled:	true if HCI logger is enabled for this channel,
- *			false otherwise.
- * @user_data:		Arbitrary data used by caller.
- * @dev:		Parent device this driver is connected to.
- *
- * Defines data needed to access an HCI channel.
- */
-struct cg2900_device {
-	int				h4_channel;
-	struct cg2900_callbacks		*cb;
-	bool				logger_enabled;
-	void				*user_data;
-	struct device			*dev;
-};
-
-/**
- * struct cg2900_callbacks - Callback structure for CG2900 user.
- * @read_cb:	Callback function called when data is received from
- *		the connectivity controller.
- * @reset_cb:	Callback function called when the connectivity controller has
- *		been reset.
- *
- * Defines the callback functions provided from the caller.
- */
-struct cg2900_callbacks {
-	void (*read_cb) (struct cg2900_device *dev, struct sk_buff *skb);
-	void (*reset_cb) (struct cg2900_device *dev);
-};
+#define CG2900_CHAR_DEV_IOCTL_EVENT_IDLE	0
+#define CG2900_CHAR_DEV_IOCTL_EVENT_RESET	1
 
 /**
  * struct cg2900_rev_data - Contains revision data for the local controller.
@@ -158,66 +43,245 @@ struct cg2900_rev_data {
 	int sub_version;
 };
 
+#ifdef __KERNEL__
+#include <linux/device.h>
+#include <linux/platform_device.h>
+#include <linux/skbuff.h>
+
+/**
+ * struct cg2900_chip_rev_info - Chip info structure.
+ * @manufacturer:	Chip manufacturer.
+ * @hci_version:	Bluetooth version supported over HCI.
+ * @hci_revision:	Chip revision, i.e. which chip is this.
+ * @lmp_pal_version:	Bluetooth version supported over air.
+ * @hci_sub_version:	Chip sub-version, i.e. which tape-out is this.
+ *
+ * Note that these values match the Bluetooth Assigned Numbers,
+ * see http://www.bluetooth.org/
+ */
+struct cg2900_chip_rev_info {
+	u16	manufacturer;
+	u8	hci_version;
+	u16	hci_revision;
+	u8	lmp_pal_version;
+	u16	hci_sub_version;
+};
+
+struct cg2900_chip_dev;
+
+/**
+ * struct cg2900_id_callbacks - Chip handler identification callbacks.
+ * @check_chip_support:	Called when chip is connected. If chip is supported by
+ *			driver, return true and fill in @callbacks in @dev.
+ *
+ * Note that the callback may be NULL. It must always be NULL checked before
+ * calling.
+ */
+struct cg2900_id_callbacks {
+	bool (*check_chip_support)(struct cg2900_chip_dev *dev);
+};
+
+/**
+ * struct cg2900_chip_callbacks - Callback functions registered by chip handler.
+ * @data_from_chip:	Called when data shall be transmitted to user.
+ * @chip_removed:	Called when chip is removed.
+ *
+ * Note that some callbacks may be NULL. They must always be NULL checked before
+ * calling.
+ */
+struct cg2900_chip_callbacks {
+	void (*data_from_chip)(struct cg2900_chip_dev *dev,
+			       struct sk_buff *skb);
+	void (*chip_removed)(struct cg2900_chip_dev *dev);
+};
+
+/**
+ * struct cg2900_trans_callbacks - Callback functions registered by transport.
+ * @open:		CG2900 Core needs a transport.
+ * @close:		CG2900 Core does not need a transport.
+ * @write:		CG2900 Core transmits to the chip.
+ * @set_chip_power:	CG2900 Core enables or disables the chip.
+ * @chip_startup_finished:	CG2900 Chip startup finished notification.
+ *
+ * Note that some callbacks may be NULL. They must always be NULL checked before
+ * calling.
+ */
+struct cg2900_trans_callbacks {
+	int (*open)(struct cg2900_chip_dev *dev);
+	int (*close)(struct cg2900_chip_dev *dev);
+	int (*write)(struct cg2900_chip_dev *dev, struct sk_buff *skb);
+	void (*set_chip_power)(struct cg2900_chip_dev *dev, bool chip_on);
+	void (*chip_startup_finished)(struct cg2900_chip_dev *dev);
+};
+
+/**
+ * struct cg2900_chip_dev - Chip handler info structure.
+ * @dev:	Device associated with this chip.
+ * @pdev:	Platform device associated with this chip.
+ * @chip:	Chip info such as manufacturer.
+ * @c_cb:	Callback structure for the chip handler.
+ * @t_cb:	Callback structure for the transport.
+ * @c_data:	Arbitrary data set by chip handler.
+ * @t_data:	Arbitrary data set by transport.
+ * @b_data:	Arbitrary data set by board handler.
+ * @prv_data:	Arbitrary data set by CG2900 Core.
+ */
+struct cg2900_chip_dev {
+	struct device			*dev;
+	struct platform_device		*pdev;
+	struct cg2900_chip_rev_info	chip;
+	struct cg2900_chip_callbacks	c_cb;
+	struct cg2900_trans_callbacks	t_cb;
+	void				*c_data;
+	void				*t_data;
+	void				*b_data;
+	void				*prv_data;
+};
+
+/**
+ * enum cg2900_gpio_pull_sleep - GPIO pull setting in sleep.
+ * @CG2900_NO_PULL:	Normal input in sleep (no pull up or down).
+ * @CG2900_PULL_UP:	Pull up in sleep.
+ * @CG2900_PULL_DN:	Pull down in sleep.
+ */
+enum cg2900_gpio_pull_sleep {
+	CG2900_NO_PULL,
+	CG2900_PULL_UP,
+	CG2900_PULL_DN
+};
+
 /**
  * struct cg2900_platform_data - Contains platform data for CG2900.
  * @init:		Callback called upon system start.
  * @exit:		Callback called upon system shutdown.
  * @enable_chip:	Callback called for enabling CG2900 chip.
  * @disable_chip:	Callback called for disabling CG2900 chip.
- * @set_hci_revision:	Callback called when HCI revision has been detected.
  * @get_power_switch_off_cmd:	Callback called to retrieve
  *				HCI VS_Power_Switch_Off command (command
  *				HCI requires platform specific GPIO data).
  * @bus:		Transport used, see @include/net/bluetooth/hci.h.
- * @cts_irq:		Interrupt for the UART CTS pin.
+ * @gpio_sleep:		Array of GPIO sleep settings.
  * @enable_uart:	Callback called when switching from UART GPIO to
  *			UART HW.
  * @disable_uart:	Callback called when switching from UART HW to
  *			UART GPIO.
+ * @n_uart_gpios:	Number of UART GPIOs.
+ * @uart_enabled:	Array of size @n_uart_gpios with GPIO setting for
+ *			enabling UART HW (switching from GPIO mode).
+ * @uart_disabled:	Array of size @n_uart_gpios with GPIO setting for
+ *			disabling UART HW (switching to GPIO mode).
  * @uart:		Platform data structure for UART transport.
  *
  * Any callback may be NULL if not needed.
  */
 struct cg2900_platform_data {
-	int (*init)(void);
-	void (*exit)(void);
-	void (*enable_chip)(void);
-	void (*disable_chip)(void);
-	void (*set_hci_revision)(u8 hci_version, u16 hci_revision,
-				 u8 lmp_version, u8 lmp_subversion,
-				 u16 manufacturer);
-	struct sk_buff* (*get_power_switch_off_cmd)(u16 *op_code);
+	int (*init)(struct cg2900_chip_dev *dev);
+	void (*exit)(struct cg2900_chip_dev *dev);
+	void (*enable_chip)(struct cg2900_chip_dev *dev);
+	void (*disable_chip)(struct cg2900_chip_dev *dev);
+	struct sk_buff* (*get_power_switch_off_cmd)(struct cg2900_chip_dev *dev,
+						    u16 *op_code);
 
 	__u8 bus;
+	enum cg2900_gpio_pull_sleep *gpio_sleep;
 
 	struct {
-		int cts_irq;
-		int (*enable_uart)(void);
-		int (*disable_uart)(void);
+		int (*enable_uart)(struct cg2900_chip_dev *dev);
+		int (*disable_uart)(struct cg2900_chip_dev *dev);
+		int n_uart_gpios;
+		unsigned long *uart_enabled;
+		unsigned long *uart_disabled;
 	} uart;
 };
 
 /**
- * struct cg2900_bt_platform_data - Contains platform data for CG2900 Bluetooth.
- * @bus:	Transport used, see @include/net/bluetooth/hci.h.
+ * struct cg2900_user_data - Contains platform data for CG2900 user.
+ * @dev:		Current device. Set by CG2900 user upon probe.
+ * @opened:		True if channel is opened.
+ * @user_data:		Data set and used by CG2900 user.
+ * @private_data:	Data set and used by CG2900 driver.
+ * @h4_channel:		H4 channel. Set by CG2900 driver.
+ * @is_audio:		True if this channel is an audio channel. Set by CG2900
+ *			driver.
+ * @chip_independent:	True if this channel does not require chip to be
+ *			powered. Set by CG2900 driver.
+ * @bt_bus:		Transport used, see @include/net/bluetooth/hci.h.
+ * @char_dev_name:	Name to be used for character device.
+ * @channel_data:	Input data specific to current device.
+ * @open:		Open device channel. Set by CG2900 driver.
+ * @close:		Close device channel. Set by CG2900 driver.
+ * @reset:		Reset connectivity controller. Set by CG2900 driver.
+ * @alloc_skb:		Alloc sk_buffer. Set by CG2900 driver.
+ * @write:		Write to device channel. Set by CG2900 driver.
+ * @get_local_revision:	Get revision data of conncected chip. Set by CG2900
+ *			driver.
+ * @read_cb:		Callback function called when data is received on the
+ *			device channel. Set by CG2900 user. Mandatory.
+ * @reset_cb:		Callback function called when the connectivity
+ *			controller has been reset. Set by CG2900 user.
+ *
+ * Any callback may be NULL if not needed.
  */
-struct cg2900_bt_platform_data {
-	__u8 bus;
+struct cg2900_user_data {
+	struct device *dev;
+	bool opened;
+
+	void *user_data;
+	void *private_data;
+
+	int	h4_channel;
+	bool	is_audio;
+	bool	chip_independent;
+
+	union {
+		__u8 bt_bus;
+		char *char_dev_name;
+	} channel_data;
+
+	int (*open)(struct cg2900_user_data *user_data);
+	void (*close)(struct cg2900_user_data *user_data);
+	int (*reset)(struct cg2900_user_data *user_data);
+	struct sk_buff * (*alloc_skb)(unsigned int size, gfp_t priority);
+	int (*write)(struct cg2900_user_data *user_data, struct sk_buff *skb);
+	bool (*get_local_revision)(struct cg2900_user_data *user_data,
+				   struct cg2900_rev_data *rev_data);
+
+	void (*read_cb)(struct cg2900_user_data *user_data,
+			struct sk_buff *skb);
+	void (*reset_cb)(struct cg2900_user_data *user_data);
 };
 
-extern struct cg2900_device *cg2900_register_user(char *name,
-						  struct cg2900_callbacks *cb);
-extern void cg2900_deregister_user(struct cg2900_device *dev);
-extern int cg2900_reset(struct cg2900_device *dev);
-extern struct sk_buff *cg2900_alloc_skb(unsigned int size, gfp_t priority);
-extern int cg2900_write(struct cg2900_device *dev, struct sk_buff *skb);
-extern bool cg2900_get_local_revision(struct cg2900_rev_data *rev_data);
-extern unsigned long cg2900_get_sleep_timeout(void);
-extern int cg2900_register_trans_driver(struct device *dev,
-					struct cg2900_trans_callbacks *cb,
-					void *data);
-extern int cg2900_deregister_trans_driver(void);
-extern unsigned long cg2900_get_sleep_timeout(void);
-extern void cg2900_data_from_chip(struct sk_buff *skb);
+static inline void *cg2900_get_usr(struct cg2900_user_data *dev)
+{
+	if (dev)
+		return dev->user_data;
+	return NULL;
+}
 
+static inline void cg2900_set_usr(struct cg2900_user_data *dev, void *data)
+{
+	if (dev)
+		dev->user_data = data;
+}
+
+static inline void *cg2900_get_prv(struct cg2900_user_data *dev)
+{
+	if (dev)
+		return dev->private_data;
+	return NULL;
+}
+
+static inline void cg2900_set_prv(struct cg2900_user_data *dev, void *data)
+{
+	if (dev)
+		dev->private_data = data;
+}
+
+extern int cg2900_register_chip_driver(struct cg2900_id_callbacks *cb);
+extern void cg2900_deregister_chip_driver(struct cg2900_id_callbacks *cb);
+extern int cg2900_register_trans_driver(struct cg2900_chip_dev *dev);
+extern int cg2900_deregister_trans_driver(struct cg2900_chip_dev *dev);
+extern unsigned long cg2900_get_sleep_timeout(void);
+
+#endif /* __KERNEL__ */
 #endif /* _CG2900_H_ */

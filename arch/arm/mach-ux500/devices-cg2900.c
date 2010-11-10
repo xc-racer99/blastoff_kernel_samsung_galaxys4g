@@ -21,6 +21,7 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
+#include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -28,22 +29,9 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/mfd/cg2900.h>
-#include <net/bluetooth/bluetooth.h>
-#include <net/bluetooth/hci.h>
 #include <plat/pincfg.h>
 
-#include "pins-db8500.h"
-
 #ifdef CONFIG_MFD_CG2900
-
-#define BT_ENABLE_GPIO			170
-#define GBF_ENA_RESET_GPIO		171
-#define BT_CTS_GPIO			0
-
-#define GBF_ENA_RESET_NAME		"gbf_ena_reset"
-#define BT_ENABLE_NAME			"bt_enable"
-
-#define UART_LINES_NUM			4
 
 #define BT_VS_POWER_SWITCH_OFF		0xFD40
 
@@ -66,58 +54,55 @@ struct vs_power_sw_off_cmd {
 	u8	gpio_16_20_pull_down;
 } __attribute__((packed));
 
-static u16 cg2900_hci_revision;
-
-#ifdef CONFIG_MFD_CG2900_UART
-/* Pin configuration for UART functions. */
-static pin_cfg_t uart0_enabled[] = {
-	GPIO0_U0_CTSn   | PIN_INPUT_PULLUP,
-	GPIO1_U0_RTSn   | PIN_OUTPUT_HIGH,
-	GPIO2_U0_RXD    | PIN_INPUT_PULLUP,
-	GPIO3_U0_TXD    | PIN_OUTPUT_HIGH
+struct dcg2900_info {
+	int	gbf_gpio;
+	int	bt_gpio;
+	bool	sleep_gpio_set;
+	u8	gpio_0_7_pull_up;
+	u8	gpio_8_15_pull_up;
+	u8	gpio_16_20_pull_up;
+	u8	gpio_0_7_pull_down;
+	u8	gpio_8_15_pull_down;
+	u8	gpio_16_20_pull_down;
 };
 
-/* Pin configuration for sleep mode. */
-static pin_cfg_t uart0_disabled[] = {
-	GPIO0_GPIO   | PIN_INPUT_PULLUP,	/* CTS pull up. */
-	GPIO1_GPIO   | PIN_OUTPUT_HIGH,		/* RTS high - flow off. */
-	GPIO2_GPIO   | PIN_INPUT_PULLUP,	/* RX pull up. */
-	GPIO3_GPIO   | PIN_OUTPUT_LOW		/* TX low - break on. */
-};
-#endif /* CONFIG_MFD_CG2900_UART */
-
-static void cg2900_enable_chip(void)
+static void dcg2900_enable_chip(struct cg2900_chip_dev *dev)
 {
-	gpio_set_value(GBF_ENA_RESET_GPIO, 1);
+	struct dcg2900_info *info = dev->b_data;
+
+	if (info->gbf_gpio != -1)
+		gpio_set_value(info->gbf_gpio, 1);
 }
 
-static void cg2900_disable_chip(void)
+static void dcg2900_disable_chip(struct cg2900_chip_dev *dev)
 {
-	gpio_set_value(GBF_ENA_RESET_GPIO, 0);
+	struct dcg2900_info *info = dev->b_data;
+
+	if (info->gbf_gpio != -1)
+		gpio_set_value(info->gbf_gpio, 0);
 }
 
-static void cg2900_set_hci_revision(u8 hci_version, u16 hci_revision,
-				    u8 lmp_version, u8 lmp_subversion,
-				    u16 manufacturer)
-{
-	cg2900_hci_revision = hci_revision;
-	/* We don't care about the other values */
-}
-
-static struct sk_buff *cg2900_get_power_switch_off_cmd(u16 *op_code)
+static struct sk_buff *dcg2900_get_power_switch_off_cmd
+				(struct cg2900_chip_dev *dev, u16 *op_code)
 {
 	struct sk_buff *skb;
 	struct vs_power_sw_off_cmd *cmd;
+	struct dcg2900_info *info;
+	int i;
 
 	/* If connected chip does not support the command return NULL */
-	if (CG2900_PG1_SPECIAL_HCI_REV != cg2900_hci_revision &&
-	    CG2900_PG1_HCI_REV != cg2900_hci_revision &&
-	    CG2900_PG2_HCI_REV != cg2900_hci_revision)
+	if (CG2900_PG1_SPECIAL_HCI_REV != dev->chip.hci_revision &&
+	    CG2900_PG1_HCI_REV != dev->chip.hci_revision &&
+	    CG2900_PG2_HCI_REV != dev->chip.hci_revision)
 		return NULL;
+
+	dev_dbg(dev->dev, "Generating PowerSwitchOff command\n");
+
+	info = dev->b_data;
 
 	skb = alloc_skb(sizeof(*cmd) + H4_HEADER_LENGTH, GFP_KERNEL);
 	if (!skb) {
-		pr_err("Could not allocate skb");
+		dev_err(dev->dev, "Could not allocate skb\n");
 		return NULL;
 	}
 
@@ -139,67 +124,145 @@ static struct sk_buff *cg2900_get_power_switch_off_cmd(u16 *op_code)
 	 * - 1: Pull-up / pull-down
 	 * All GPIOs are set as input.
 	 */
-	cmd->gpio_0_7_pull_up = 0x00;
-	cmd->gpio_8_15_pull_up = 0x00;
-	cmd->gpio_16_20_pull_up = 0x00;
-	cmd->gpio_0_7_pull_down = 0x00;
-	cmd->gpio_8_15_pull_down = 0x00;
-	cmd->gpio_16_20_pull_down = 0x00;
+	if (!info->sleep_gpio_set) {
+		struct cg2900_platform_data *pf_data;
+
+		pf_data = dev_get_platdata(dev->dev);
+		for (i = 0; i < 8; i++) {
+			if (pf_data->gpio_sleep[i] == CG2900_PULL_UP)
+				info->gpio_0_7_pull_up |= (1 << i);
+			else if (pf_data->gpio_sleep[i] == CG2900_PULL_DN)
+				info->gpio_0_7_pull_down |= (1 << i);
+		}
+		for (i = 8; i < 16; i++) {
+			if (pf_data->gpio_sleep[i] == CG2900_PULL_UP)
+				info->gpio_8_15_pull_up |= (1 << (i - 8));
+			else if (pf_data->gpio_sleep[i] == CG2900_PULL_DN)
+				info->gpio_8_15_pull_down |= (1 << (i - 8));
+		}
+		for (i = 16; i < 21; i++) {
+			if (pf_data->gpio_sleep[i] == CG2900_PULL_UP)
+				info->gpio_16_20_pull_up |= (1 << (i - 16));
+			else if (pf_data->gpio_sleep[i] == CG2900_PULL_DN)
+				info->gpio_16_20_pull_down |= (1 << (i - 16));
+		}
+		info->sleep_gpio_set = true;
+	}
+	cmd->gpio_0_7_pull_up = info->gpio_0_7_pull_up;
+	cmd->gpio_8_15_pull_up = info->gpio_8_15_pull_up;
+	cmd->gpio_16_20_pull_up = info->gpio_16_20_pull_up;
+	cmd->gpio_0_7_pull_down = info->gpio_0_7_pull_down;
+	cmd->gpio_8_15_pull_down = info->gpio_8_15_pull_down;
+	cmd->gpio_16_20_pull_down = info->gpio_16_20_pull_down;
+
 
 	if (op_code)
 		*op_code = BT_VS_POWER_SWITCH_OFF;
 
 	return skb;
 }
-static int cg2900_init(void)
+
+static int dcg2900_init(struct cg2900_chip_dev *dev)
 {
 	int err = 0;
+	struct dcg2900_info *info;
+	struct resource *resource;
+	const char *gbf_name;
+	const char *bt_name = NULL;
 
-	err = gpio_request(GBF_ENA_RESET_GPIO, GBF_ENA_RESET_NAME);
-	if (err < 0) {
-		pr_err("gpio_request failed with err: %d", err);
+	/* First retrieve and save the resources */
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (!info) {
+		dev_err(dev->dev, "Could not allocate dcg2900_info\n");
+		return -ENOMEM;
+	}
+
+	if (!dev->pdev->num_resources) {
+		dev_dbg(dev->dev, "No resources available\n");
+		info->gbf_gpio = -1;
+		info->bt_gpio = -1;
 		goto finished;
 	}
 
-	err = gpio_direction_output(GBF_ENA_RESET_GPIO, 1);
-	if (err < 0) {
-		pr_err("gpio_direction_output failed with err: %d", err);
-		goto error_handling;
+	resource = platform_get_resource(dev->pdev, IORESOURCE_IO, 0);
+	if (!resource) {
+		dev_err(dev->dev, "GBF GPIO does not exist\n");
+		err = -EINVAL;
+		goto err_handling;
+	}
+	info->gbf_gpio = resource->start;
+	gbf_name = resource->name;
+
+	resource = platform_get_resource(dev->pdev, IORESOURCE_IO, 1);
+	/* BT Enable GPIO may not exist */
+	if (resource) {
+		info->bt_gpio = resource->start;
+		bt_name = resource->name;
 	}
 
-	err = gpio_request(BT_ENABLE_GPIO, BT_ENABLE_NAME);
+	/* Now setup the GPIOs */
+	err = gpio_request(info->gbf_gpio, gbf_name);
 	if (err < 0) {
-		pr_err("gpio_request failed with err: %d", err);
+		dev_err(dev->dev, "gpio_request failed with err: %d\n", err);
+		goto err_handling;
+	}
+
+	err = gpio_direction_output(info->gbf_gpio, 0);
+	if (err < 0) {
+		dev_err(dev->dev, "gpio_direction_output failed with err: %d\n",
+			err);
+		goto err_handling_free_gpio_gbf;
+	}
+
+	if (!bt_name) {
+		info->bt_gpio = -1;
 		goto finished;
 	}
 
-	err = gpio_direction_output(BT_ENABLE_GPIO, 1);
+	err = gpio_request(info->bt_gpio, bt_name);
 	if (err < 0) {
-		pr_err("gpio_direction_output failed with err: %d", err);
-		goto error_handling;
+		dev_err(dev->dev, "gpio_request failed with err: %d\n", err);
+		goto err_handling_free_gpio_gbf;
 	}
 
-	goto finished;
-
-error_handling:
-	gpio_free(GBF_ENA_RESET_GPIO);
+	err = gpio_direction_output(info->bt_gpio, 1);
+	if (err < 0) {
+		dev_err(dev->dev, "gpio_direction_output failed with err: %d\n",
+			err);
+		goto err_handling_free_gpio_bt;
+	}
 
 finished:
-	cg2900_disable_chip();
+	dev->b_data = info;
+	return 0;
+
+err_handling_free_gpio_bt:
+	gpio_free(info->bt_gpio);
+err_handling_free_gpio_gbf:
+	gpio_free(info->gbf_gpio);
+err_handling:
+	kfree(info);
 	return err;
 }
 
-void cg2900_exit(void)
+static void dcg2900_exit(struct cg2900_chip_dev *dev)
 {
-	cg2900_disable_chip();
-	gpio_free(GBF_ENA_RESET_GPIO);
+	struct dcg2900_info *info = dev->b_data;
+
+	dcg2900_disable_chip(dev);
+	if (info->bt_gpio != -1)
+		gpio_free(info->bt_gpio);
+	if (info->gbf_gpio != -1)
+		gpio_free(info->gbf_gpio);
+	kfree(info);
+	dev->b_data = NULL;
 }
 
 #ifdef CONFIG_MFD_CG2900_UART
-
-static int cg2900_disable_uart(void)
+static int dcg2900_disable_uart(struct cg2900_chip_dev *dev)
 {
 	int err;
+	struct cg2900_platform_data *pdata = dev_get_platdata(dev->dev);
 
 	/*
 	 * Without this delay we get interrupt on CTS immediately
@@ -208,56 +271,45 @@ static int cg2900_disable_uart(void)
 	mdelay(4);
 
 	/* Disable UART functions. */
-	err = nmk_config_pins(uart0_disabled, UART_LINES_NUM);
+	err = nmk_config_pins(pdata->uart.uart_disabled,
+			      pdata->uart.n_uart_gpios);
 	if (err)
 		goto error;
 
 	return 0;
 
 error:
-	(void)nmk_config_pins(uart0_enabled, UART_LINES_NUM);
-	pr_err("Cannot set interrupt (%d)", err);
+	(void)nmk_config_pins(pdata->uart.uart_enabled,
+			      pdata->uart.n_uart_gpios);
+	dev_err(dev->dev, "Cannot set interrupt (%d)\n", err);
 	return err;
 }
 
-
-static int cg2900_enable_uart(void)
+static int dcg2900_enable_uart(struct cg2900_chip_dev *dev)
 {
 	int err;
+	struct cg2900_platform_data *pdata = dev_get_platdata(dev->dev);
 
 	/* Restore UART settings. */
-	err = nmk_config_pins(uart0_enabled, UART_LINES_NUM);
+	err = nmk_config_pins(pdata->uart.uart_enabled,
+			      pdata->uart.n_uart_gpios);
 	if (err)
-		pr_err("Unable to enable UART (%d)", err);
+		dev_err(dev->dev, "Unable to enable UART (%d)\n", err);
 
 	return err;
 }
-
 #endif /* CONFIG_MFD_CG2900_UART */
 
-struct cg2900_platform_data cg2900_platform_data = {
-	.init = cg2900_init,
-	.exit = cg2900_exit,
-	.enable_chip = cg2900_enable_chip,
-	.disable_chip = cg2900_disable_chip,
-	.set_hci_revision = cg2900_set_hci_revision,
-	.get_power_switch_off_cmd = cg2900_get_power_switch_off_cmd,
-
-	.bus = HCI_UART,
-
+void dcg2900_init_platdata(struct cg2900_platform_data *data)
+{
+	data->init = dcg2900_init;
+	data->exit = dcg2900_exit;
+	data->enable_chip = dcg2900_enable_chip;
+	data->disable_chip = dcg2900_disable_chip;
+	data->get_power_switch_off_cmd = dcg2900_get_power_switch_off_cmd;
 #ifdef CONFIG_MFD_CG2900_UART
-	.uart = {
-		.cts_irq = GPIO_TO_IRQ(BT_CTS_GPIO),
-		.enable_uart = cg2900_enable_uart,
-		.disable_uart = cg2900_disable_uart
-	},
+	data->uart.enable_uart = dcg2900_enable_uart;
+	data->uart.disable_uart = dcg2900_disable_uart;
 #endif /* CONFIG_MFD_CG2900_UART */
-};
-
-struct platform_device ux500_cg2900_device = {
-	.name = "cg2900",
-	.dev = {
-		.platform_data = &cg2900_platform_data,
-	}
-};
+}
 #endif /* CONFIG_MFD_CG2900 */

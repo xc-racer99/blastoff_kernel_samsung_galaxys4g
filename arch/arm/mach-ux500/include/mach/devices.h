@@ -35,9 +35,6 @@ extern struct platform_device ux500_hwmem_device;
 extern struct amba_device ux500_rtc_device;
 extern struct platform_device ux500_hash1_device;
 extern struct platform_device ux500_musb_device;
-#ifdef CONFIG_MFD_CG2900
-extern struct platform_device ux500_cg2900_device;
-#endif
 extern struct platform_device u5500_pwm0_device;
 extern struct platform_device u5500_pwm1_device;
 extern struct platform_device u5500_pwm2_device;

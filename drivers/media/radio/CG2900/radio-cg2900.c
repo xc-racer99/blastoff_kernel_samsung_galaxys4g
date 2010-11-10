@@ -14,6 +14,7 @@
 #include<media/v4l2-ioctl.h>
 #include<media/v4l2-common.h>
 #include<linux/module.h>
+#include <linux/platform_device.h>
 #include<linux/string.h>
 #include<linux/wait.h>
 #include"cg2900_fm_driver.h"
@@ -145,9 +146,6 @@ static void cg2900_convert_err_to_v4l2(
 			char status_byte,
 			char *out_byte
 			);
-
-static int __init cg2900_init(void);
-static void __exit cg2900_exit(void);
 
 static u32 freq_low;
 static u32 freq_high;
@@ -2507,29 +2505,39 @@ done:
 }
 
 /**
- * cg2900_init()- This function initializes the FM Driver.
+ * radio_cg2900_probe()- This function initializes the FM Driver.
  *
- * This Fucntion is called whenever the Driver is loaded from
- * Video4Linux driver. It registers the FM Driver with Video4Linux
- * as a character device.
+ * This function is called whenever the driver is probed by the device system,
+ * i.e. when a CG2900 controller has connected. It registers the FM Driver with
+ * Video4Linux as a character device.
  *
  * Returns:
  *   0 on success
  * -EINVAL on error
  */
-static int __init cg2900_init(void)
+static int __devinit radio_cg2900_probe(struct platform_device *pdev)
 {
+	int err;
+
 	FM_INFO_REPORT(BANNER);
+
+	err = fmd_set_dev(&pdev->dev);
+	if (err) {
+		FM_ERR_REPORT("Could not set device %s", pdev->name);
+		return err;
+	}
+
 	radio_nr = 0;
 	grid = CG2900_FM_GRID_100;
 	band = CG2900_FM_BAND_US_EU;
-	FM_INFO_REPORT("cg2900_init: radio_nr= %d.", radio_nr);
+	FM_INFO_REPORT("radio_cg2900_probe: radio_nr= %d.", radio_nr);
+
 	/* Initialize the parameters */
 	if (video_register_device(
 				&cg2900_video_device,
 				VFL_TYPE_RADIO,
 				radio_nr) == -1) {
-		FM_ERR_REPORT("cg2900_init: video_register_device err");
+		FM_ERR_REPORT("radio_cg2900_probe: video_register_device err");
 		return -EINVAL;
 	}
 	mutex_init(&fm_mutex);
@@ -2540,20 +2548,54 @@ static int __init cg2900_init(void)
 }
 
 /**
- * cg2900_exit()- This function exits the FM Driver.
+ * radio_cg2900_remove()- This function removes the FM Driver.
  *
- * This function is called whenever the Driver is unloaded from
- * VideoForLinux driver.
+ * This function is called whenever the driver is removed by the device system,
+ * i.e. when a CG2900 controller has disconnected. It unregisters the FM Driver
+ * from Video4Linux.
  */
-static void __exit cg2900_exit(void)
+static int __devexit radio_cg2900_remove(struct platform_device *pdev)
 {
-	FM_INFO_REPORT("cg2900_exit");
+	FM_INFO_REPORT("radio_cg2900_remove");
 
 	/* Try to Switch Off FM in case it is still switched on */
 	cg2900_fm_switch_off();
 	cg2900_fm_deinit();
 	mutex_destroy(&fm_mutex);
 	video_unregister_device(&cg2900_video_device);
+	fmd_set_dev(NULL);
+	return 0;
+}
+
+static struct platform_driver radio_cg2900_driver = {
+	.driver = {
+		.name	= "cg2900-fm",
+		.owner	= THIS_MODULE,
+	},
+	.probe	= radio_cg2900_probe,
+	.remove	= __devexit_p(radio_cg2900_remove),
+};
+
+/**
+ * radio_cg2900_init() - Initialize module.
+ *
+ * Registers platform driver.
+ */
+static int __init radio_cg2900_init(void)
+{
+	FM_INFO_REPORT("radio_cg2900_init");
+	return platform_driver_register(&radio_cg2900_driver);
+}
+
+/**
+ * radio_cg2900_exit() - Remove module.
+ *
+ * Unregisters platform driver.
+ */
+static void __exit radio_cg2900_exit(void)
+{
+	FM_INFO_REPORT("radio_cg2900_exit");
+	platform_driver_unregister(&radio_cg2900_driver);
 }
 
 void wake_up_poll_queue(void)
@@ -2584,8 +2626,8 @@ void cg2900_handle_device_reset(void)
 	mutex_unlock(&fm_mutex);
 }
 
-module_init(cg2900_init);
-module_exit(cg2900_exit);
+module_init(radio_cg2900_init);
+module_exit(radio_cg2900_exit);
 MODULE_AUTHOR("Hemant Gupta");
 MODULE_LICENSE("GPL v2");
 

@@ -11,6 +11,7 @@
 #ifndef _FMDRIVER_H_
 #define _FMDRIVER_H_
 
+#include <linux/device.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/uaccess.h>
@@ -1600,5 +1601,10 @@ void fmd_get_rds_sem(void);
  * on receiving  irpt_BufferFull, RDS Task is un-blocked.
  */
 void fmd_set_rds_sem(void);
+
+/**
+ * fmd_set_dev() - Set FM device.
+ */
+int fmd_set_dev(struct device *dev);
 
 #endif /* _FMDRIVER_H_  */

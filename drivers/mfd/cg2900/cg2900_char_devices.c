@@ -1,6 +1,4 @@
 /*
- * drivers/mfd/cg2900/cg2900_char_devices.c
- *
  * Copyright (C) ST-Ericsson SA 2010
  * Authors:
  * Par-Gunnar Hjalmdahl (par-gunnar.p.hjalmdahl@stericsson.com) for ST-Ericsson.
@@ -15,6 +13,7 @@
 #define NAME					"cg2900_char_dev"
 #define pr_fmt(fmt)				NAME ": " fmt "\n"
 
+#include <linux/compiler.h>
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/file.h>
@@ -31,48 +30,27 @@
 
 #include "cg2900_core.h"
 
-/* Ioctls */
-#define CG2900_CHAR_DEV_IOCTL_RESET		_IOW('U', 210, int)
-#define CG2900_CHAR_DEV_IOCTL_CHECK4RESET	_IOR('U', 212, int)
-#define CG2900_CHAR_DEV_IOCTL_GET_REVISION	_IOR('U', 213, int)
-#define CG2900_CHAR_DEV_IOCTL_GET_SUB_VER	_IOR('U', 214, int)
-
-#define CG2900_CHAR_DEV_IOCTL_EVENT_RESET	1
-#define CG2900_CHAR_DEV_IOCTL_EVENT_CLOSED	2
-
-#define MAIN_DEV				(dev->miscdev->parent)
-
-/**
- * enum char_reset_state - Reset state.
- * @CG2900_CHAR_IDLE:	Idle state.
- * @CG2900_CHAR_RESET:	Reset state.
- */
-enum char_reset_state {
-	CG2900_CHAR_IDLE,
-	CG2900_CHAR_RESET
-};
+#define MAIN_DEV				(dev->dev)
 
 /**
  * struct char_dev_user - Stores device information.
- * @dev:		Registered CG2900 Core device.
- * @miscdev:	Registered device struct.
+ * @dev:		Current device.
+ * @miscdev:		Registered device struct.
  * @name:		Name of device.
  * @rx_queue:		Data queue.
  * @rx_wait_queue:	Wait queue.
  * @reset_wait_queue:	Reset Wait queue.
- * @reset_state:	Reset state.
  * @read_mutex:		Read mutex.
  * @write_mutex:	Write mutex.
  * @list:		List header for inserting into device list.
  */
 struct char_dev_user {
-	struct cg2900_device	*dev;
-	struct miscdevice	*miscdev;
+	struct device		*dev;
+	struct miscdevice	miscdev;
 	char			*name;
 	struct sk_buff_head	rx_queue;
 	wait_queue_head_t	rx_wait_queue;
 	wait_queue_head_t	reset_wait_queue;
-	enum char_reset_state	reset_state;
 	struct mutex		read_mutex;
 	struct mutex		write_mutex;
 	struct list_head	list;
@@ -81,10 +59,12 @@ struct char_dev_user {
 /**
  * struct char_info - Stores all current users.
  * @open_mutex:	Open mutex (used for both open and release).
+ * @man_mutex:	Management mutex.
  * @dev_users:	List of char dev users.
  */
 struct char_info {
 	struct mutex		open_mutex;
+	struct mutex		man_mutex;
 	struct list_head	dev_users;
 };
 
@@ -97,18 +77,11 @@ static struct char_info *char_info;
  *
  * The char_dev_read_cb() function handles data received from the CG2900 driver.
  */
-static void char_dev_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
+static void char_dev_read_cb(struct cg2900_user_data *dev, struct sk_buff *skb)
 {
-	struct char_dev_user *char_dev = (struct char_dev_user *)dev->user_data;
+	struct char_dev_user *char_dev = dev_get_drvdata(dev->dev);
 
-	if (!char_dev) {
-		pr_err("char_dev_read_cb No char dev! Exiting");
-		kfree_skb(skb);
-		return;
-	}
-
-	dev_dbg(char_dev->miscdev->parent, "char_dev_read_cb len %d\n",
-		skb->len);
+	dev_dbg(dev->dev, "char_dev_read_cb len %d\n", skb->len);
 
 	skb_queue_tail(&char_dev->rx_queue, skb);
 
@@ -121,32 +94,15 @@ static void char_dev_read_cb(struct cg2900_device *dev, struct sk_buff *skb)
  *
  * The char_dev_reset_cb() function handles reset from the CG2900 driver.
  */
-static void char_dev_reset_cb(struct cg2900_device *dev)
+static void char_dev_reset_cb(struct cg2900_user_data *dev)
 {
-	struct char_dev_user *char_dev = (struct char_dev_user *)dev->user_data;
+	struct char_dev_user *char_dev = dev_get_drvdata(dev->dev);
 
-	if (!char_dev) {
-		pr_err("char_dev_reset_cb No char dev! Exiting");
-		return;
-	}
-
-	dev_dbg(char_dev->miscdev->parent, "char_dev_reset_cb\n");
-
-	char_dev->reset_state = CG2900_CHAR_RESET;
-	/*
-	 * The device will be freed by CG2900 Core when this function is
-	 * finished.
-	 */
-	char_dev->dev = NULL;
+	dev_dbg(dev->dev, "char_dev_reset_cb\n");
 
 	wake_up_interruptible(&char_dev->rx_wait_queue);
 	wake_up_interruptible(&char_dev->reset_wait_queue);
 }
-
-static struct cg2900_callbacks char_cb = {
-	.read_cb = char_dev_read_cb,
-	.reset_cb = char_dev_reset_cb
-};
 
 /**
  * char_dev_open() - Open char device.
@@ -157,29 +113,32 @@ static struct cg2900_callbacks char_cb = {
  *
  * Returns:
  *   0 if there is no error.
- *   -EACCES if device was already registered to driver or if registration
- *   failed.
+ *   -EINVAL if device cannot be found in device list.
+ *   Error codes from cg2900->open.
  */
 static int char_dev_open(struct inode *inode, struct file *filp)
 {
-	int err = 0;
+	int err;
 	int minor;
 	struct char_dev_user *dev = NULL;
 	struct char_dev_user *tmp;
 	struct list_head *cursor;
+	struct cg2900_user_data *user;
 
 	mutex_lock(&char_info->open_mutex);
 
 	minor = iminor(inode);
 
 	/* Find the device for this file */
+	mutex_lock(&char_info->man_mutex);
 	list_for_each(cursor, &char_info->dev_users) {
 		tmp = list_entry(cursor, struct char_dev_user, list);
-		if (tmp->miscdev->minor == minor) {
+		if (tmp->miscdev.minor == minor) {
 			dev = tmp;
 			break;
 		}
 	}
+	mutex_unlock(&char_info->man_mutex);
 	if (!dev) {
 		pr_err("Could not identify device in inode");
 		err = -EINVAL;
@@ -187,30 +146,21 @@ static int char_dev_open(struct inode *inode, struct file *filp)
 	}
 
 	filp->private_data = dev;
+	user = dev_get_platdata(dev->dev);
 
-	if (dev->dev) {
-		dev_err(MAIN_DEV,
-			"Device already registered to CG2900 Driver\n");
-		err = -EACCES;
-		goto error_handling;
-	}
 	/* First initiate wait queues for this device. */
 	init_waitqueue_head(&dev->rx_wait_queue);
 	init_waitqueue_head(&dev->reset_wait_queue);
 
-	dev->reset_state = CG2900_CHAR_IDLE;
-
 	/* Register to CG2900 Driver */
-	dev->dev = cg2900_register_user(dev->name, &char_cb);
-	if (dev->dev) {
-		dev->dev->user_data = dev;
-		dev_info(MAIN_DEV, "char_dev %s opened\n", dev->name);
-	} else {
+	err = user->open(user);
+	if (err) {
 		dev_err(MAIN_DEV,
 			"Couldn't register to CG2900 for H:4 channel %s\n",
 			dev->name);
-		err = -EACCES;
+		goto error_handling;
 	}
+	dev_info(MAIN_DEV, "char_dev %s opened\n", dev->name);
 
 error_handling:
 	mutex_unlock(&char_info->open_mutex);
@@ -231,7 +181,8 @@ error_handling:
 static int char_dev_release(struct inode *inode, struct file *filp)
 {
 	int err = 0;
-	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
+	struct char_dev_user *dev = filp->private_data;
+	struct cg2900_user_data *user;
 
 	pr_debug("char_dev_release");
 
@@ -244,12 +195,12 @@ static int char_dev_release(struct inode *inode, struct file *filp)
 	mutex_lock(&dev->read_mutex);
 	mutex_lock(&dev->write_mutex);
 
-	if (dev->reset_state == CG2900_CHAR_IDLE)
-		cg2900_deregister_user(dev->dev);
+	user = dev_get_platdata(dev->dev);
+	if (user->opened)
+		user->close(user);
 
 	dev_info(MAIN_DEV, "char_dev %s closed\n", dev->name);
 
-	dev->dev = NULL;
 	filp->private_data = NULL;
 	wake_up_interruptible(&dev->rx_wait_queue);
 	wake_up_interruptible(&dev->reset_wait_queue);
@@ -280,7 +231,8 @@ static int char_dev_release(struct inode *inode, struct file *filp)
 static ssize_t char_dev_read(struct file *filp, char __user *buf, size_t count,
 			     loff_t *f_pos)
 {
-	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
+	struct char_dev_user *dev = filp->private_data;
+	struct cg2900_user_data *user;
 	struct sk_buff *skb;
 	int bytes_to_copy;
 	int err = 0;
@@ -293,20 +245,20 @@ static ssize_t char_dev_read(struct file *filp, char __user *buf, size_t count,
 	}
 	mutex_lock(&dev->read_mutex);
 
-	if (skb_queue_empty(&dev->rx_queue)) {
+	user = dev_get_platdata(dev->dev);
+
+	if (user->opened && skb_queue_empty(&dev->rx_queue)) {
 		err = wait_event_interruptible(dev->rx_wait_queue,
 				(!(skb_queue_empty(&dev->rx_queue))) ||
-				(CG2900_CHAR_RESET == dev->reset_state) ||
-				(dev->dev == NULL));
+				!user->opened);
 		if (err) {
 			dev_err(MAIN_DEV, "Failed to wait for event\n");
 			goto error_handling;
 		}
 	}
 
-	if (!dev->dev) {
-		dev_err(MAIN_DEV,
-			"dev is empty - return with negative bytes\n");
+	if (!user->opened) {
+		dev_err(MAIN_DEV, "Channel has been closed\n");
 		err = -EBADF;
 		goto error_handling;
 	}
@@ -362,7 +314,8 @@ static ssize_t char_dev_write(struct file *filp, const char __user *buf,
 			      size_t count, loff_t *f_pos)
 {
 	struct sk_buff *skb;
-	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
+	struct char_dev_user *dev = filp->private_data;
+	struct cg2900_user_data *user;
 	int err = 0;
 
 	pr_debug("char_dev_write");
@@ -371,9 +324,16 @@ static ssize_t char_dev_write(struct file *filp, const char __user *buf,
 		pr_err("Calling with NULL pointer");
 		return -EBADF;
 	}
+
+	user = dev_get_platdata(dev->dev);
+	if (!user->opened) {
+		dev_err(MAIN_DEV, "char_dev_write: Channel not opened\n");
+		return -EACCES;
+	}
+
 	mutex_lock(&dev->write_mutex);
 
-	skb = cg2900_alloc_skb(count, GFP_ATOMIC);
+	skb = user->alloc_skb(count, GFP_ATOMIC);
 	if (!skb) {
 		dev_err(MAIN_DEV, "Couldn't allocate sk_buff with length %d\n",
 			count);
@@ -388,7 +348,7 @@ static ssize_t char_dev_write(struct file *filp, const char __user *buf,
 		goto error_handling;
 	}
 
-	err = cg2900_write(dev->dev, skb);
+	err = user->write(user, skb);
 	if (err) {
 		dev_err(MAIN_DEV, "cg2900_write failed (%d)\n", err);
 		kfree_skb(skb);
@@ -411,7 +371,6 @@ error_handling:
  *
  * Returns:
  *   0 if there is no error.
- *   -EBADF if NULL pointer was supplied in private data.
  *   -EINVAL if supplied cmd is not supported.
  *   For cmd CG2900_CHAR_DEV_IOCTL_CHECK4RESET 0x01 is returned if device is
  *   reset and 0x02 is returned if device is closed.
@@ -419,72 +378,73 @@ error_handling:
 static long char_dev_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				    unsigned long arg)
 {
-	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
+	struct char_dev_user *dev = filp->private_data;
+	struct cg2900_user_data *user;
 	struct cg2900_rev_data rev_data;
 	int err = 0;
+	int ret_val;
+	void __user *user_arg = (void __user *)arg;
 
-	pr_debug("char_dev_unlocked_ioctl for %s\n"
-		 "\tDIR: %d\n"
-		 "\tTYPE: %d\n"
-		 "\tNR: %d\n"
-		 "\tSIZE: %d",
-		 dev->name, _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd),
-		 _IOC_SIZE(cmd));
+	dev_dbg(dev->dev, "char_dev_unlocked_ioctl for %s\n"
+		"\tDIR: %d\n"
+		"\tTYPE: %d\n"
+		"\tNR: %d\n"
+		"\tSIZE: %d",
+		dev->name, _IOC_DIR(cmd), _IOC_TYPE(cmd), _IOC_NR(cmd),
+		_IOC_SIZE(cmd));
+
+	user = dev_get_platdata(dev->dev);
 
 	switch (cmd) {
 	case CG2900_CHAR_DEV_IOCTL_RESET:
-		if (!dev) {
-			err = -EBADF;
-			goto error_handling;
-		}
+		if (!user->opened)
+			return -EACCES;
 		dev_dbg(MAIN_DEV, "ioctl reset command for device %s\n",
 			dev->name);
-		err = cg2900_reset(dev->dev);
+		err = user->reset(user);
 		break;
 
 	case CG2900_CHAR_DEV_IOCTL_CHECK4RESET:
-		if (!dev) {
-			pr_debug("ioctl check for reset command for device");
-			/* Return positive value if closed */
-			err = CG2900_CHAR_DEV_IOCTL_EVENT_CLOSED;
-		} else if (dev->reset_state == CG2900_CHAR_RESET) {
-			dev_dbg(MAIN_DEV,
-				"ioctl check for reset command for device "
-				"%s", dev->name);
-			/* Return positive value if reset */
-			err = CG2900_CHAR_DEV_IOCTL_EVENT_RESET;
+		if (user->opened)
+			ret_val = CG2900_CHAR_DEV_IOCTL_EVENT_IDLE;
+		else
+			ret_val = CG2900_CHAR_DEV_IOCTL_EVENT_RESET;
+
+		dev_dbg(MAIN_DEV, "ioctl check for reset command for device %s",
+			dev->name);
+
+		err = copy_to_user(user_arg, &ret_val, sizeof(ret_val));
+		if (err) {
+			dev_err(MAIN_DEV,
+				"Error %d from copy_to_user for reset\n", err);
+			return -EFAULT;
 		}
 		break;
 
 	case CG2900_CHAR_DEV_IOCTL_GET_REVISION:
-		if (cg2900_get_local_revision(&rev_data)) {
-			pr_debug("ioctl check for local revision info\n"
-				 "\trevision 0x%04X", rev_data.revision);
-			err = rev_data.revision;
-		} else {
-			pr_debug("No revision data available");
-			err = -EIO;
+		if (!user->get_local_revision(user, &rev_data)) {
+			dev_err(MAIN_DEV, "No revision data available\n");
+			return -EIO;
 		}
-		break;
-
-	case CG2900_CHAR_DEV_IOCTL_GET_SUB_VER:
-		if (cg2900_get_local_revision(&rev_data)) {
-			pr_debug("ioctl check for local sub-version info\n"
-				 "\tsub_version 0x%04X", rev_data.sub_version);
-			err = rev_data.sub_version;
-		} else {
-			pr_debug("No revision data available");
-			err = -EIO;
+		dev_dbg(MAIN_DEV, "ioctl check for local revision info\n"
+			"\trevision 0x%04X\n"
+			"\tsub_version 0x%04X\n",
+			rev_data.revision, rev_data.sub_version);
+		err = copy_to_user(user_arg, &rev_data, sizeof(rev_data));
+		if (err) {
+			dev_err(MAIN_DEV,
+				"Error %d from copy_to_user for "
+				"revision\n", err);
+			return -EFAULT;
 		}
 		break;
 
 	default:
-		pr_err("Unknown ioctl command %08X", cmd);
+		dev_err(MAIN_DEV, "Unknown ioctl command %08X\n", cmd);
 		err = -EINVAL;
 		break;
 	};
 
-error_handling:
 	return err;
 }
 
@@ -498,7 +458,8 @@ error_handling:
  */
 static unsigned int char_dev_poll(struct file *filp, poll_table *wait)
 {
-	struct char_dev_user *dev = (struct char_dev_user *)filp->private_data;
+	struct char_dev_user *dev = filp->private_data;
+	struct cg2900_user_data *user;
 	unsigned int mask = 0;
 
 	if (!dev) {
@@ -506,19 +467,18 @@ static unsigned int char_dev_poll(struct file *filp, poll_table *wait)
 		return POLLERR | POLLRDHUP;
 	}
 
+	user = dev_get_platdata(dev->dev);
+
 	poll_wait(filp, &dev->reset_wait_queue, wait);
 	poll_wait(filp, &dev->rx_wait_queue, wait);
 
-	if (!dev->dev)
-		mask |= POLLERR | POLLRDHUP;
+	if (!user->opened)
+		mask |= POLLERR | POLLRDHUP | POLLPRI;
 	else
 		mask |= POLLOUT; /* We can TX unless there is an error */
 
 	if (!(skb_queue_empty(&dev->rx_queue)))
 		mask |= POLLIN | POLLRDNORM;
-
-	if (CG2900_CHAR_RESET == dev->reset_state)
-		mask |= POLLPRI;
 
 	return mask;
 }
@@ -544,72 +504,6 @@ static const struct file_operations char_dev_fops = {
 };
 
 /**
- * setup_dev() - Set up the char device structure for device.
- * @parent:	Parent device pointer.
- * @name:	Name of registered device.
- *
- * The setup_dev() function sets up the char_dev structure for this device.
- *
- * Returns:
- *   0 if there is no error.
- *   -EINVAL if NULL pointer has been supplied.
- *   Error codes from cdev_add and device_create.
- */
-static int setup_dev(struct device *parent, char *name)
-{
-	int err = 0;
-	struct char_dev_user *dev_usr;
-
-	dev_usr = kzalloc(sizeof(*dev_usr), GFP_KERNEL);
-	if (!dev_usr) {
-		dev_err(parent, "Couldn't allocate dev_usr\n");
-		return -ENOMEM;
-	}
-
-	/* Store device name */
-	dev_usr->name = name;
-
-	dev_usr->miscdev = kzalloc(sizeof(*(dev_usr->miscdev)),
-				       GFP_KERNEL);
-	if (!dev_usr->miscdev) {
-		dev_err(parent, "Couldn't allocate char_dev\n");
-		err = -ENOMEM;
-		goto err_free_usr;
-	}
-
-	/* Prepare miscdevice struct before registering the device */
-	dev_usr->miscdev->minor = MISC_DYNAMIC_MINOR;
-	dev_usr->miscdev->name = name;
-	dev_usr->miscdev->fops = &char_dev_fops;
-	dev_usr->miscdev->parent = parent;
-
-	err = misc_register(dev_usr->miscdev);
-	if (err) {
-		dev_err(parent, "Error %d registering misc dev\n", err);
-		goto err_free_dev;
-	}
-
-	dev_dbg(parent, "Added char device %s with major %d and minor %d\n",
-		name, MAJOR(dev_usr->miscdev->this_device->devt),
-		MINOR(dev_usr->miscdev->this_device->devt));
-
-	mutex_init(&dev_usr->read_mutex);
-	mutex_init(&dev_usr->write_mutex);
-
-	skb_queue_head_init(&dev_usr->rx_queue);
-
-	list_add_tail(&dev_usr->list, &char_info->dev_users);
-	return 0;
-
-err_free_dev:
-	kfree(dev_usr->miscdev);
-	dev_usr->miscdev = NULL;
-err_free_usr:
-	kfree(dev_usr);
-	return err;
-}
-
-/**
  * remove_dev() - Remove char device structure for device.
  * @dev_usr:	Char device user.
  *
@@ -620,11 +514,11 @@ static void remove_dev(struct char_dev_user *dev_usr)
 	if (!dev_usr)
 		return;
 
-	dev_dbg(dev_usr->miscdev->parent,
+	dev_dbg(dev_usr->dev,
 		"Removing char device %s with major %d and minor %d\n",
-		dev_usr->miscdev->name,
-		MAJOR(dev_usr->miscdev->this_device->devt),
-		MINOR(dev_usr->miscdev->this_device->devt));
+		dev_usr->name,
+		MAJOR(dev_usr->miscdev.this_device->devt),
+		MINOR(dev_usr->miscdev.this_device->devt));
 
 	skb_queue_purge(&dev_usr->rx_queue);
 
@@ -632,10 +526,7 @@ static void remove_dev(struct char_dev_user *dev_usr)
 	mutex_destroy(&dev_usr->write_mutex);
 
 	/* Remove device node in file system. */
-	misc_deregister(dev_usr->miscdev);
-	kfree(dev_usr->miscdev);
-	dev_usr->miscdev = NULL;
-
+	misc_deregister(&dev_usr->miscdev);
 	kfree(dev_usr);
 }
 
@@ -650,43 +541,62 @@ static void remove_dev(struct char_dev_user *dev_usr)
  */
 static int __devinit cg2900_char_probe(struct platform_device *pdev)
 {
-	struct device *parent;
+	int err = 0;
+	struct char_dev_user *dev_usr;
+	struct cg2900_user_data *user;
 
 	dev_dbg(&pdev->dev, "cg2900_char_probe\n");
 
-	if (char_info) {
-		dev_err(&pdev->dev, "Char devices already initiated\n");
-		return -EACCES;
-	}
+	user = dev_get_platdata(&pdev->dev);
+	user->dev = &pdev->dev;
+	user->read_cb = char_dev_read_cb;
+	user->reset_cb = char_dev_reset_cb;
 
-	parent = &pdev->dev;
-
-	/* Initialize private data. */
-	char_info = kzalloc(sizeof(*char_info), GFP_ATOMIC);
-	if (!char_info) {
-		dev_err(&pdev->dev, "Could not alloc char_info struct\n");
+	dev_usr = kzalloc(sizeof(*dev_usr), GFP_KERNEL);
+	if (!dev_usr) {
+		dev_err(&pdev->dev, "Couldn't allocate dev_usr\n");
 		return -ENOMEM;
 	}
 
-	mutex_init(&char_info->open_mutex);
-	INIT_LIST_HEAD(&char_info->dev_users);
+	dev_set_drvdata(&pdev->dev, dev_usr);
+	dev_usr->dev = &pdev->dev;
 
-	setup_dev(parent, CG2900_BT_CMD);
-	setup_dev(parent, CG2900_BT_ACL);
-	setup_dev(parent, CG2900_BT_EVT);
-	setup_dev(parent, CG2900_FM_RADIO);
-	setup_dev(parent, CG2900_GNSS);
-	setup_dev(parent, CG2900_DEBUG);
-	setup_dev(parent, CG2900_STE_TOOLS);
-	setup_dev(parent, CG2900_HCI_LOGGER);
-	setup_dev(parent, CG2900_US_CTRL);
-	setup_dev(parent, CG2900_BT_AUDIO);
-	setup_dev(parent, CG2900_FM_RADIO_AUDIO);
-	setup_dev(parent, CG2900_CORE);
+	/* Store device name */
+	dev_usr->name = user->channel_data.char_dev_name;
 
-	dev_info(&pdev->dev, "CG2900 char dev started\n");
+	/* Prepare miscdevice struct before registering the device */
+	dev_usr->miscdev.minor = MISC_DYNAMIC_MINOR;
+	dev_usr->miscdev.name = dev_usr->name;
+	dev_usr->miscdev.nodename = dev_usr->name;
+	dev_usr->miscdev.fops = &char_dev_fops;
+	dev_usr->miscdev.parent = &pdev->dev;
+	dev_usr->miscdev.mode = S_IRUGO | S_IWUGO;
+
+	err = misc_register(&dev_usr->miscdev);
+	if (err) {
+		dev_err(&pdev->dev, "Error %d registering misc dev\n", err);
+		goto err_free_usr;
+	}
+
+	dev_dbg(&pdev->dev, "Added char device %s with major %d and minor %d\n",
+		dev_usr->name, MAJOR(dev_usr->miscdev.this_device->devt),
+		MINOR(dev_usr->miscdev.this_device->devt));
+
+	mutex_init(&dev_usr->read_mutex);
+	mutex_init(&dev_usr->write_mutex);
+
+	skb_queue_head_init(&dev_usr->rx_queue);
+
+	mutex_lock(&char_info->man_mutex);
+	list_add_tail(&dev_usr->list, &char_info->dev_users);
+	mutex_unlock(&char_info->man_mutex);
 
 	return 0;
+
+err_free_usr:
+	kfree(dev_usr);
+	dev_set_drvdata(&pdev->dev, NULL);
+	return err;
 }
 
 /**
@@ -700,24 +610,23 @@ static int __devexit cg2900_char_remove(struct platform_device *pdev)
 {
 	struct list_head *cursor, *next;
 	struct char_dev_user *tmp;
+	struct char_dev_user *user;
 
 	dev_dbg(&pdev->dev, "cg2900_char_remove\n");
 
-	if (!char_info)
-		return 0;
+	user = dev_get_drvdata(&pdev->dev);
 
+	mutex_lock(&char_info->man_mutex);
 	list_for_each_safe(cursor, next, &char_info->dev_users) {
 		tmp = list_entry(cursor, struct char_dev_user, list);
-		list_del(cursor);
-		remove_dev(tmp);
+		if (tmp == user) {
+			list_del(cursor);
+			remove_dev(tmp);
+			dev_set_drvdata(&pdev->dev, NULL);
+			break;
+		}
 	}
-
-	mutex_destroy(&char_info->open_mutex);
-
-	kfree(char_info);
-	char_info = NULL;
-
-	dev_info(&pdev->dev, "CG2900 char dev removed\n");
+	mutex_unlock(&char_info->man_mutex);
 	return 0;
 }
 
@@ -738,6 +647,18 @@ static struct platform_driver cg2900_char_driver = {
 static int __init cg2900_char_init(void)
 {
 	pr_debug("cg2900_char_init");
+
+	/* Initialize private data. */
+	char_info = kzalloc(sizeof(*char_info), GFP_ATOMIC);
+	if (!char_info) {
+		pr_err("Could not alloc char_info struct");
+		return -ENOMEM;
+	}
+
+	mutex_init(&char_info->open_mutex);
+	mutex_init(&char_info->man_mutex);
+	INIT_LIST_HEAD(&char_info->dev_users);
+
 	return platform_driver_register(&cg2900_char_driver);
 }
 
@@ -748,8 +669,27 @@ static int __init cg2900_char_init(void)
  */
 static void __exit cg2900_char_exit(void)
 {
+	struct list_head *cursor, *next;
+	struct char_dev_user *tmp;
+
 	pr_debug("cg2900_char_exit");
+
 	platform_driver_unregister(&cg2900_char_driver);
+
+	if (!char_info)
+		return;
+
+	list_for_each_safe(cursor, next, &char_info->dev_users) {
+		tmp = list_entry(cursor, struct char_dev_user, list);
+		list_del(cursor);
+		remove_dev(tmp);
+	}
+
+	mutex_destroy(&char_info->open_mutex);
+	mutex_destroy(&char_info->man_mutex);
+
+	kfree(char_info);
+	char_info = NULL;
 }
 
 module_init(cg2900_char_init);
