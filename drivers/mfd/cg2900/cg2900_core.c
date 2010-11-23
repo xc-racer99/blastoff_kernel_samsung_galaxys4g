@@ -276,7 +276,7 @@ EXPORT_SYMBOL(default_hci_revision);
 int default_sub_version = 0x0011;
 EXPORT_SYMBOL(default_sub_version);
 
-static int sleep_timeout_ms = 100;
+static int sleep_timeout_ms = 10000;
 
 /*
  * chip_handlers - List of the register handlers for different chips.
