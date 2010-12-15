@@ -149,8 +149,8 @@ fw-shipped-$(CONFIG_RADIO_CG2900) += cg2900_fm_bt_src_coeff_info.fw cg2900_fm_ex
 					cg2900_fm_fm_coeff_info.fw cg2900_fm_fm_prog_info.fw \
 					R1f.2_SoC1v20_BT_src_coeff_1.1.fw R1f.2_SoC1v20_EXT_src_coeff_1.1.fw \
 					R1f.2_SoC1v20_Cobra_FM_SOC1_coef.fw R1f.2_SoC1v20_Cobra_FM_SOC1_prog.fw \
-					R2c_SoC2v01_BT_src_coeff_1.1.fw R2c_SoC2v01_Cobra_FM_SOC2_coef.fw \
-					R2c_SoC2v01_Cobra_FM_SOC2_prog.fw R2c_SoC2v01_EXT_src_coeff_1.1.fw
+					R2c.2_SoC2v03_BT_src_coeff_1.1.fw R2c.2_SoC2v03_EXT_src_coeff_1.1.fw \
+					R2c.2_SoC2v03_Cobra_FM_SOC2_coef.fw R2c.2_SoC2v03_Cobra_FM_SOC2_prog.fw
 
 fw-shipped-all := $(fw-shipped-y) $(fw-shipped-m) $(fw-shipped-)
 
