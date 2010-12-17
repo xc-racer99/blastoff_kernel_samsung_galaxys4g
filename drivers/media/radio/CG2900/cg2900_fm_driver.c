@@ -2752,7 +2752,8 @@ int fmd_rx_stop_seeking(void)
 	}
 
 	if (!(fmd_state_info.gocmd == FMD_STATE_SEEK ||
-		fmd_state_info.gocmd == FMD_STATE_SCAN_BAND)) {
+		fmd_state_info.gocmd == FMD_STATE_SCAN_BAND ||
+		fmd_state_info.gocmd == FMD_STATE_BLOCK_SCAN)) {
 		err = -ENOEXEC;
 		goto error;
 	}
