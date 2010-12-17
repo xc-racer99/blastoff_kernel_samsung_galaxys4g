@@ -853,11 +853,48 @@ static int vidioc_set_frequency(
 			)
 {
 	u32 frequency = freq->frequency;
+	u32 freq_low, freq_high;
 	int status;
 	int ret_val = -EINVAL;
 
 	FM_INFO_REPORT("vidioc_set_frequency: Frequency = "
 			"%d ", V4L2_TO_HZ(frequency));
+
+	/*  Check which band is set currently */
+	switch (band) {
+	case CG2900_FM_BAND_US_EU:
+		freq_low = FMR_EU_US_LOW_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		freq_high = FMR_EU_US_HIGH_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		break;
+
+	case CG2900_FM_BAND_CHINA:
+		freq_low = FMR_CHINA_LOW_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		freq_high = FMR_CHINA_HIGH_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		break;
+
+	case CG2900_FM_BAND_JAPAN:
+		freq_low = FMR_JAPAN_LOW_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		freq_high = FMR_JAPAN_HIGH_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		break;
+
+	default:
+		/* Set to US_MAX and CHINA_MIN band */
+		freq_low = FMR_CHINA_LOW_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+		freq_high = FMR_EU_US_HIGH_FREQ_IN_MHZ *
+			FMR_HZ_TO_MHZ_CONVERTER;
+	}
+
+	/* Check if the frequency set is out of current band */
+	if ((V4L2_TO_HZ(frequency) < freq_low) ||
+		(V4L2_TO_HZ(frequency) > freq_high))
+		goto error;
 
 	spin_lock(&fm_spinlock);
 	fm_event = CG2900_EVENT_NO_EVENT;
