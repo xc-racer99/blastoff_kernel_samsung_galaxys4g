@@ -14,6 +14,7 @@
 #define NAME			"cg2900_uart"
 #define pr_fmt(fmt)		NAME ": " fmt "\n"
 
+#include <asm/atomic.h>
 #include <asm/byteorder.h>
 #include <linux/device.h>
 #include <linux/gpio.h>
@@ -243,6 +244,19 @@ struct uart_work_struct{
 	struct work_struct	work;
 	void			*data;
 };
+
+/**
+ * struct uart_delayed_work_struct - Work structure for UART module.
+ * @delayed_work:	Work structure.
+ * @data:	Pointer to private data.
+ *
+ * This structure is used to pack work for work queue.
+ */
+struct uart_delayed_work_struct{
+	struct delayed_work	work;
+	void			*data;
+};
+
 /**
  * struct uart_info - Main UART info structure.
  * @rx_state:		Current RX state.
@@ -254,14 +268,17 @@ struct uart_work_struct{
  * @baud_rate_state:	UART baud rate change state.
  * @baud_rate:		Current baud rate setting.
  * @sleep_state:	UART sleep state.
- * @timer:		UART timer (for chip sleep).
+ * @sleep_work:		Delayed sleep work struct.
+ * @wakeup_work:		Wake-up work struct.
  * @sleep_state_lock:	Used to protect chip state.
  * @sleep_allowed:	Indicate if tty has functions needed for sleep mode.
+ * @transfer_counter:		Variable to keep track of ongoing transfers.
  * @regulator:		Regulator.
  * @regulator_enabled:	True if regulator is enabled.
  * @dev:		Pointer to CG2900 uart device.
  * @chip_dev:		Chip device for current UART transport.
  * @cts_irq:		CTS interrupt for this UART.
+ * @cts_gpio:		CTS GPIO for this UART.
  */
 struct uart_info {
 	enum uart_rx_state		rx_state;
@@ -275,14 +292,17 @@ struct uart_info {
 	enum baud_rate_change_state	baud_rate_state;
 	int				baud_rate;
 	enum sleep_state		sleep_state;
-	struct timer_list		timer;
+	struct uart_delayed_work_struct		sleep_work;
+	struct uart_work_struct		wakeup_work;
 	struct mutex			sleep_state_lock;
 	bool				sleep_allowed;
+	atomic_t		transfer_counter;
 	struct	regulator		*regulator;
 	bool				regulator_enabled;
 	struct device			*dev;
 	struct cg2900_chip_dev		chip_dev;
 	int				cts_irq;
+	int				cts_gpio;
 };
 
 /* Module parameters */
@@ -292,7 +312,7 @@ static int uart_debug;
 
 static DECLARE_WAIT_QUEUE_HEAD(uart_wait_queue);
 
-static void update_timer(struct uart_info *uart_info);
+static void wake_up_chip(struct uart_info *uart_info);
 
 /**
  * is_chip_flow_off() - Check if chip has set flow off.
@@ -357,15 +377,25 @@ static int create_work_item(struct uart_info *uart_info,
  * @work:	work which needs to be done.
  *
  * The handle_cts_irq() function is a work handler called if interrupt on CTS
- * occurred. It updates the sleep timer which will wake up the transport.
+ * occurred. It wakes up the transport.
  */
 static void handle_cts_irq(struct work_struct *work)
 {
 	struct uart_work_struct *current_work =
 		container_of(work, struct uart_work_struct, work);
+	struct uart_info *uart_info = (struct uart_info *)current_work->data;
 
-	/* Restart timer and disable interrupt. */
-	update_timer((struct uart_info *)current_work->data);
+	mutex_lock(&(uart_info->sleep_state_lock));
+
+	if (uart_info->sleep_state == CHIP_SUSPENDED) {
+		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_RESUMING\n");
+		uart_info->sleep_state = CHIP_RESUMING;
+		mutex_unlock(&(uart_info->sleep_state_lock));
+	} else {
+		mutex_unlock(&(uart_info->sleep_state_lock));
+		wake_up_chip(uart_info);
+	}
+
 	kfree(current_work);
 }
 
@@ -374,7 +404,7 @@ static void handle_cts_irq(struct work_struct *work)
  * @irq:	Interrupt that occurred.
  * @dev_id:	Device ID where interrupt occurred.
  *
- * The handle_cts_irq() function is called if interrupt on CTS occurred.
+ * The cts_interrupt() function is called if interrupt on CTS occurred.
  * It disables the interrupt and starts a new work thread to handle
  * the interrupt.
  */
@@ -386,14 +416,8 @@ static irqreturn_t cts_interrupt(int irq, void *dev_id)
 #endif
 	disable_irq_nosync(irq);
 
-	/* If chip is suspended, resume callback will be called. */
-	if (CHIP_SUSPENDED != uart_info->sleep_state)
-		/* Create work and leave IRQ context. */
-		(void)create_work_item(uart_info, handle_cts_irq);
-	else {
-		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_RESUMING\n");
-		uart_info->sleep_state = CHIP_RESUMING;
-	}
+	/* Create work and leave IRQ context. */
+	(void)create_work_item(uart_info, handle_cts_irq);
 
 	return IRQ_HANDLED;
 }
@@ -410,6 +434,7 @@ static int set_cts_irq(struct uart_info *uart_info)
 {
 	int err;
 	struct cg2900_platform_data *pf_data;
+	int cts_val = 0;
 
 	pf_data = dev_get_platdata(uart_info->dev);
 
@@ -418,7 +443,7 @@ static int set_cts_irq(struct uart_info *uart_info)
 		err = pf_data->uart.disable_uart(&uart_info->chip_dev);
 		if (err) {
 			dev_err(MAIN_DEV, "Could not disable UART (%d)\n", err);
-			goto error;
+			return err;
 		}
 	}
 
@@ -430,6 +455,20 @@ static int set_cts_irq(struct uart_info *uart_info)
 			  uart_info->dev);
 	if (err) {
 		dev_err(MAIN_DEV, "Could not request CTS IRQ (%d)\n", err);
+		goto error;
+	}
+
+	/*
+	 * It may happen that there was already an interrupt on CTS just before
+	 * the enable_irq() call above. If the CTS line is low now it means that
+	 * it's happened, so disable the CTS interrupt and return -ECANCELED.
+	 */
+	cts_val = gpio_get_value(uart_info->cts_gpio);
+	if (!cts_val) {
+		dev_err(MAIN_DEV, "Missed interrupt, going back to "
+				"awake state");
+		free_irq(uart_info->cts_irq, uart_info->dev);
+		err = -ECANCELED;
 		goto error;
 	}
 
@@ -489,17 +528,27 @@ static unsigned long get_sleep_timeout(struct uart_info *uart_info)
 }
 
 /**
- * update_timer() - Updates or starts the sleep timer.
- * @uart_info: Main Uart structure.
- *
- * Updates or starts the sleep timer used to detect when there are no current
- * data transmissions.
+ * work_wake_up_chip() - Called to wake up of the transport in work context.
+ * @work:	work which needs to be done.
  */
-static void update_timer(struct uart_info *uart_info)
+static void work_wake_up_chip(struct work_struct *work)
+{
+	struct uart_work_struct *current_work =
+		container_of(work, struct uart_work_struct, work);
+	struct uart_info *uart_info = (struct uart_info *)current_work->data;
+
+	wake_up_chip(uart_info);
+}
+
+/**
+ * wake_up_chip() - Wakes up the chip and transport.
+ * @work:	pointer to a work struct if the function was called that way.
+ *
+ * Depending on the current sleep state it may wake up the transport.
+ */
+static void wake_up_chip(struct uart_info *uart_info)
 {
 	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
-
-	del_timer(&uart_info->timer);
 
 	/* Resuming state is special. Need to get back chip to awake state. */
 	if (!timeout_jiffies && uart_info->sleep_state != CHIP_RESUMING)
@@ -513,19 +562,18 @@ static void update_timer(struct uart_info *uart_info)
 	if (CHIP_AWAKE == uart_info->sleep_state)
 		goto finished;
 
-
 	if (CHIP_ASLEEP == uart_info->sleep_state ||
 		CHIP_RESUMING == uart_info->sleep_state) {
 		/* Disable IRQ only when it was enabled. */
 		unset_cts_irq(uart_info);
 		(void)hci_uart_set_baudrate(uart_info->hu,
 							uart_info->baud_rate);
+		/* Set FLOW on. */
+		hci_uart_flow_ctrl(uart_info->hu, FLOW_ON);
 	}
-	/* Set FLOW on. */
-	hci_uart_flow_ctrl(uart_info->hu, FLOW_ON);
 
 	/* Unset BREAK. */
-	dev_dbg(MAIN_DEV, "update_timer: Clear break\n");
+	dev_dbg(MAIN_DEV, "wake_up_chip: Clear break\n");
 	hci_uart_set_break(uart_info->hu, BREAK_OFF);
 
 	dev_dbg(MAIN_DEV, "New sleep_state: CHIP_AWAKE\n");
@@ -533,26 +581,25 @@ static void update_timer(struct uart_info *uart_info)
 
 finished:
 	mutex_unlock(&(uart_info->sleep_state_lock));
-	/*
-	 * If timer is running restart it. If not, start it.
-	 * All this is handled by mod_timer().
-	 */
-	mod_timer(&(uart_info->timer), jiffies + timeout_jiffies);
 }
 
 /**
- * sleep_timer_expired() - Called when sleep timer expires.
- * @data:	Value supplied when starting the timer.
+ * set_chip_sleep_mode() - Put the chip and transport to sleep mode.
+ * @work:	pointer to work_struct.
  *
- * The sleep_timer_expired() function is called if there are no ongoing data
+ * The set_chip_sleep_mode() function is called if there are no ongoing data
  * transmissions. It tries to put the chip in sleep mode.
  *
  */
-static void sleep_timer_expired(unsigned long data)
+static void set_chip_sleep_mode(struct work_struct *work)
 {
-	struct uart_info *uart_info = (struct uart_info *)data;
-	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
 	int err = 0;
+	struct delayed_work *delayed_work =
+			container_of(work, struct delayed_work, work);
+	struct uart_delayed_work_struct *current_work =	container_of(
+			delayed_work, struct uart_delayed_work_struct, work);
+	struct uart_info *uart_info = (struct uart_info *)current_work->data;
+	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
 
 	if (!timeout_jiffies)
 		return;
@@ -561,8 +608,11 @@ static void sleep_timer_expired(unsigned long data)
 
 	switch (uart_info->sleep_state) {
 	case CHIP_FALLING_ASLEEP:
-		if (!is_chip_flow_off(uart_info))
-			goto run_timer;
+		if (!is_chip_flow_off(uart_info)) {
+			dev_dbg(MAIN_DEV, "Chip flow is on, it's not ready to"
+					"sleep yet");
+			goto schedule_sleep_work;
+		}
 
 		/* Flow OFF. */
 		hci_uart_flow_ctrl(uart_info->hu, FLOW_OFF);
@@ -586,7 +636,7 @@ static void sleep_timer_expired(unsigned long data)
 			uart_info->sleep_state = CHIP_AWAKE;
 
 			if (err == -ECANCELED)
-				goto run_timer;
+				goto finished;
 			else
 				goto error;
 		}
@@ -601,7 +651,7 @@ static void sleep_timer_expired(unsigned long data)
 
 		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_FALLING_ASLEEP\n");
 		uart_info->sleep_state = CHIP_FALLING_ASLEEP;
-		goto run_timer;
+		goto schedule_sleep_work;
 
 	case CHIP_POWERED_DOWN:
 	case CHIP_SUSPENDED:
@@ -616,9 +666,14 @@ static void sleep_timer_expired(unsigned long data)
 
 	return;
 
-run_timer:
+finished:
 	mutex_unlock(&(uart_info->sleep_state_lock));
-	mod_timer(&(uart_info->timer), jiffies + timeout_jiffies);
+	return;
+schedule_sleep_work:
+	mutex_unlock(&(uart_info->sleep_state_lock));
+	if (timeout_jiffies)
+		queue_delayed_work(uart_info->wq, &uart_info->sleep_work.work,
+				timeout_jiffies);
 	return;
 error:
 	/* Disable sleep mode.*/
@@ -640,17 +695,25 @@ error:
  */
 static int cg2900_uart_suspend(struct platform_device *pdev, pm_message_t state)
 {
+	int err = 0;
 	struct uart_info *uart_info = dev_get_drvdata(&pdev->dev);
 
-	if (uart_info->sleep_state == CHIP_POWERED_DOWN)
-		return 0;
+	mutex_lock(&(uart_info->sleep_state_lock));
 
-	if (uart_info->sleep_state != CHIP_ASLEEP)
-		return -EBUSY;
+	if (uart_info->sleep_state == CHIP_POWERED_DOWN)
+		goto finished;
+
+	if (uart_info->sleep_state != CHIP_ASLEEP) {
+		err = -EBUSY;
+		goto finished;
+	}
 
 	dev_dbg(MAIN_DEV, "New sleep_state: CHIP_SUSPENDED\n");
 	uart_info->sleep_state = CHIP_SUSPENDED;
-	return 0;
+
+finished:
+	mutex_unlock(&(uart_info->sleep_state_lock));
+	return err;
 }
 
 /**
@@ -666,17 +729,18 @@ static int cg2900_uart_resume(struct platform_device *pdev)
 {
 	struct uart_info *uart_info = dev_get_drvdata(&pdev->dev);
 
-	if (uart_info->sleep_state == CHIP_POWERED_DOWN)
-		return 0;
+	mutex_lock(&(uart_info->sleep_state_lock));
 
 	if (uart_info->sleep_state == CHIP_RESUMING)
 		/* System resume because of trafic on UART. Lets wakeup.*/
-		update_timer(uart_info);
-	else {
+		(void)queue_work(uart_info->wq, &uart_info->wakeup_work.work);
+	else if (uart_info->sleep_state != CHIP_POWERED_DOWN) {
 		/* No need to wakeup chip. Go back to Asleep state.*/
 		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_ASLEEP\n");
 		uart_info->sleep_state = CHIP_ASLEEP;
 	}
+
+	mutex_unlock(&(uart_info->sleep_state_lock));
 	return 0;
 }
 #endif /* CONFIG_PM */
@@ -928,18 +992,32 @@ static struct sk_buff *alloc_set_baud_rate_cmd(struct uart_info *uart_info,
  */
 static void work_do_transmit(struct work_struct *work)
 {
-	struct uart_work_struct *current_work;
-	struct uart_info *uart_info;
-
-	current_work = container_of(work, struct uart_work_struct, work);
-	uart_info = (struct uart_info *)current_work->data;
+	struct uart_work_struct *current_work =
+			container_of(work, struct uart_work_struct, work);
+	struct uart_info *uart_info = (struct uart_info *)current_work->data;
+	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
 
 	kfree(current_work);
 
-	/* Restart timer. */
-	update_timer(uart_info);
+	/* Mark that there is an ongoing transfer. */
+	atomic_inc(&(uart_info->transfer_counter));
+
+	/* Cancel pending sleep work if there is any. */
+	cancel_delayed_work(&uart_info->sleep_work.work);
+
+	/* Wake up the chip and transport. */
+	wake_up_chip(uart_info);
 
 	(void)hci_uart_tx_wakeup(uart_info->hu);
+
+	/*
+	 * If there are no ongoing transfers schedule the sleep work.
+	 */
+	if (atomic_dec_and_test(&uart_info->transfer_counter) &&
+			timeout_jiffies)
+		queue_delayed_work(uart_info->wq,
+				&uart_info->sleep_work.work,
+				timeout_jiffies);
 }
 
 /**
@@ -1073,9 +1151,6 @@ static int uart_write(struct cg2900_chip_dev *dev, struct sk_buff *skb)
 	int err;
 	struct uart_info *uart_info = dev_get_drvdata(dev->dev);
 
-	/* Delete sleep timer. */
-	(void)del_timer(&uart_info->timer);
-
 	if (uart_debug)
 		dev_dbg(MAIN_DEV, "uart_write: data len = %d\n", skb->len);
 
@@ -1109,6 +1184,7 @@ static int uart_open(struct cg2900_chip_dev *dev)
 	struct sk_buff *skb;
 	struct hci_command_hdr *cmd;
 	struct uart_info *uart_info = dev_get_drvdata(dev->dev);
+
 	/*
 	 * Chip has just been started up. It has a system to autodetect
 	 * exact baud rate and transport to use. There are only a few commands
@@ -1205,9 +1281,10 @@ static void uart_set_chip_power(struct cg2900_chip_dev *dev, bool chip_on)
 	/* Turn off the chip.*/
 	switch (uart_info->sleep_state) {
 	case CHIP_AWAKE:
+		cancel_delayed_work(&uart_info->sleep_work.work);
 		break;
 	case CHIP_FALLING_ASLEEP:
-		del_timer(&uart_info->timer);
+		cancel_delayed_work(&uart_info->sleep_work.work);
 		hci_uart_set_break(uart_info->hu, BREAK_OFF);
 		break;
 	case CHIP_SUSPENDED:
@@ -1245,12 +1322,17 @@ finished:
 
 /**
  * uart_chip_startup_finished() - CG2900 startup finished.
+ * @dev:	Transport device information.
  */
 static void uart_chip_startup_finished(struct cg2900_chip_dev *dev)
 {
 	struct uart_info *uart_info = dev_get_drvdata(dev->dev);
-	/* Run the timer. */
-	update_timer(uart_info);
+	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
+
+	/* Schedule work to put the chip and transport to sleep. */
+	if (timeout_jiffies)
+		queue_delayed_work(uart_info->wq, &uart_info->sleep_work.work,
+				timeout_jiffies);
 }
 /**
  * uart_close() - Close the CG2900 UART for data transfers.
@@ -1424,10 +1506,15 @@ static int cg2900_hu_receive(struct hci_uart *hu,
 	struct gnss_hci_hdr	*gnss;
 	struct uart_info *uart_info = dev_get_drvdata(hu->proto->dev);
 	u8 *tmp;
+	unsigned long timeout_jiffies = get_sleep_timeout(uart_info);
 
 	r_ptr = (const u8 *)data;
 
-	update_timer(uart_info);
+	/* Mark that there is an ongoing transfer. */
+	atomic_inc(&(uart_info->transfer_counter));
+
+	/* Cancel pending sleep work if there is any. */
+	cancel_delayed_work(&uart_info->sleep_work.work);
 
 	if (uart_debug)
 		print_hex_dump_bytes(NAME " RX:\t", DUMP_PREFIX_NONE,
@@ -1545,6 +1632,18 @@ check_h4_header:
 		r_ptr++;
 		count--;
 	}
+
+	/* Schedule a work to wake-up the chip */
+	(void)queue_work(uart_info->wq, &uart_info->wakeup_work.work);
+
+	/*
+	 * If there are no ongoing transfers schedule the sleep work.
+	 */
+	if (atomic_dec_and_test(&uart_info->transfer_counter) &&
+			timeout_jiffies)
+		queue_delayed_work(uart_info->wq,
+				&uart_info->sleep_work.work,
+				timeout_jiffies);
 
 	return count;
 }
@@ -1717,6 +1816,8 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 	}
 	uart_info->cts_irq = resource->start;
 
+	uart_info->cts_gpio = IRQ_TO_GPIO(uart_info->cts_irq);
+
 	/* Init UART TX work queue */
 	uart_info->wq = create_singlethread_workqueue(UART_WQ_NAME);
 	if (!uart_info->wq) {
@@ -1724,10 +1825,18 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 		err = -ECHILD; /* No child processes */
 		goto error_handling_free;
 	}
-	init_timer(&uart_info->timer);
-	uart_info->timer.function = sleep_timer_expired;
-	uart_info->timer.expires  = jiffies + cg2900_get_sleep_timeout();
-	uart_info->timer.data = (unsigned long)uart_info;
+
+	/* Initialize the atom variable to 0 (means no ongoing
+	 * transmit/receive). */
+	atomic_set(&(uart_info->transfer_counter), 0);
+
+	/* Initialize sleep work data */
+	uart_info->sleep_work.data = uart_info;
+	INIT_DELAYED_WORK(&uart_info->sleep_work.work, set_chip_sleep_mode);
+
+	/* Initialize wake-up work data */
+	uart_info->wakeup_work.data = uart_info;
+	INIT_WORK(&uart_info->wakeup_work.work, work_wake_up_chip);
 
 	uart_info->dev = &pdev->dev;
 

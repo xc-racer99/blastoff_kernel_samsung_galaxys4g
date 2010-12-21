@@ -55,6 +55,7 @@
  */
 #define CHIP_READY_TIMEOUT		(100)	/* ms */
 #define REVISION_READOUT_TIMEOUT	(500)	/* ms */
+#define SLEEP_TIMEOUT_MS		(500)	/* ms */
 
 /**
  * enum boot_state - BOOT-state for CG2900 Core.
@@ -117,7 +118,7 @@ u8 bd_address[] = {0x00, 0xBE, 0xAD, 0xDE, 0x80, 0x00};
 EXPORT_SYMBOL_GPL(bd_address);
 int bd_addr_count = BT_BDADDR_SIZE;
 
-static int sleep_timeout_ms = 10000;
+static int sleep_timeout_ms = SLEEP_TIMEOUT_MS;
 
 /**
  * send_bt_cmd() - Copy and send sk_buffer with no assigned user.
@@ -696,7 +697,8 @@ module_exit(cg2900_exit);
 module_param(sleep_timeout_ms, int, S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(sleep_timeout_ms,
 		 "Sleep timeout for data transmissions:\n"
-		 "\t0 = disable <default>\n"
+		 "\tDefault 500 ms\n"
+		 "\t0 = disable\n"
 		 "\t>0 = sleep timeout in milliseconds");
 
 module_param_array(bd_address, byte, &bd_addr_count,
