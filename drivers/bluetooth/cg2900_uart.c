@@ -53,6 +53,7 @@
 
 /* Timers used in milliseconds */
 #define UART_TX_TIMEOUT		100
+#define UART_RX_TIMEOUT		20
 #define UART_RESP_TIMEOUT	1000
 
 /* Number of bytes to reserve at start of sk_buffer when receiving packet */
@@ -1075,6 +1076,11 @@ static int set_baud_rate(struct hci_uart *hu, int baud)
 		return -EALREADY;
 	}
 
+	/*
+	 * Wait some time to be sure that any RX process has finished (which
+	 * flows on RTS in the end) before flowing off the RTS.
+	 */
+	schedule_timeout_interruptible(msecs_to_jiffies(UART_RX_TIMEOUT));
 	hci_uart_flow_ctrl(uart_info->hu, FLOW_OFF);
 
 	/*
