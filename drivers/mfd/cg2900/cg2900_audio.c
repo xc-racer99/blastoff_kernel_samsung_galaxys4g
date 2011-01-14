@@ -2021,9 +2021,13 @@ static int conn_start_pcm_to_sco(struct audio_user *audio_user,
 	*stream_handle = (u8)err;
 	dev_dbg(BT_DEV, "stream_handle set to %d\n", *stream_handle);
 
-	/* Now start the stream by sending HCI_VS_Session_Control command */
-	err = send_vs_session_ctrl(audio_user, *stream_handle,
-				   CG2900_BT_SESSION_START);
+	/* Now start the stream */
+	if (info->revision == CHIP_REV_PG1)
+		err = send_vs_session_ctrl(audio_user, *stream_handle,
+					   CG2900_BT_SESSION_START);
+	else
+		err = send_vs_stream_ctrl(audio_user, *stream_handle,
+					  CG2900_MC_STREAM_START);
 
 finished_unlock_mutex:
 	dev_dbg(BT_DEV, "New resp_state: IDLE\n");
