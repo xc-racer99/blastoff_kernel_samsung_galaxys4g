@@ -467,7 +467,7 @@ static int set_cts_irq(struct uart_info *uart_info)
 	cts_val = gpio_get_value(uart_info->cts_gpio);
 	if (!cts_val) {
 		dev_err(MAIN_DEV, "Missed interrupt, going back to "
-				"awake state");
+			"awake state\n");
 		free_irq(uart_info->cts_irq, uart_info->dev);
 		err = -ECANCELED;
 		goto error;
@@ -556,6 +556,14 @@ static void wake_up_chip(struct uart_info *uart_info)
 		return;
 
 	mutex_lock(&(uart_info->sleep_state_lock));
+
+	/*
+	 * If chip is powered down we cannot wake it up here. It has to be woken
+	 * up through a call to uart_set_chip_power()
+	 */
+	if (CHIP_POWERED_DOWN == uart_info->sleep_state)
+		goto finished;
+
 	/*
 	 * This function indicates data is transmitted.
 	 * Therefore see to that the chip is awake.
@@ -611,7 +619,7 @@ static void set_chip_sleep_mode(struct work_struct *work)
 	case CHIP_FALLING_ASLEEP:
 		if (!is_chip_flow_off(uart_info)) {
 			dev_dbg(MAIN_DEV, "Chip flow is on, it's not ready to"
-					"sleep yet");
+				"sleep yet\n");
 			goto schedule_sleep_work;
 		}
 
@@ -1203,7 +1211,7 @@ static int uart_open(struct cg2900_chip_dev *dev)
 
 	skb = alloc_skb(sizeof(*cmd) + HCI_H4_SIZE, GFP_ATOMIC);
 	if (!skb) {
-		dev_err(MAIN_DEV, "Couldn't allocate sk_buff with length %d",
+		dev_err(MAIN_DEV, "Couldn't allocate sk_buff with length %d\n",
 			     sizeof(*cmd));
 		return -EACCES;
 	}
@@ -1263,13 +1271,14 @@ static void uart_set_chip_power(struct cg2900_chip_dev *dev, bool chip_on)
 		    (chip_on ? "ENABLE" : "DISABLE"));
 
 	if (!uart_info->hu) {
-		dev_err(MAIN_DEV, "Hci uart struct is not allocated!");
+		dev_err(MAIN_DEV, "Hci uart struct is not allocated\n");
 		return;
 	}
 
 	if (chip_on) {
 		if (uart_info->sleep_state != CHIP_POWERED_DOWN) {
-			dev_err(MAIN_DEV, "Chip is already powered up");
+			dev_err(MAIN_DEV, "Chip is already powered up (%d)\n",
+				uart_info->sleep_state);
 			return;
 		}
 
@@ -1302,6 +1311,9 @@ static void uart_set_chip_power(struct cg2900_chip_dev *dev, bool chip_on)
 	default:
 		break;
 	}
+
+	/* Cancel any ongoing works since chip is shutting down */
+	cancel_work_sync(&uart_info->wakeup_work.work);
 
 	if (pf_data->disable_chip) {
 		pf_data->disable_chip(dev);
@@ -1749,7 +1761,7 @@ static struct sk_buff *cg2900_hu_dequeue(struct hci_uart *hu)
 	 */
 	if ((BAUD_START == uart_info->baud_rate_state) &&
 		skb && (is_set_baud_rate_cmd(skb->data))) {
-		dev_dbg(MAIN_DEV, "UART set baud rate cmd found.");
+		dev_dbg(MAIN_DEV, "UART set baud rate cmd found\n");
 		uart_info->baud_rate_state = BAUD_SENDING;
 	}
 
@@ -1848,7 +1860,7 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 
 	p = kzalloc(sizeof(*p), GFP_KERNEL);
 	if (!p) {
-		dev_err(MAIN_DEV, "Could not allocate p.");
+		dev_err(MAIN_DEV, "cg2900_uart_probe: Could not allocate p\n");
 		goto error_handling_wq;
 	}
 
@@ -1864,7 +1876,8 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 
 	err = hci_uart_register_proto(p);
 	if (err) {
-		dev_err(MAIN_DEV, "Can not register protocol.");
+		dev_err(MAIN_DEV, "cg2900_uart_probe: Can not register "
+			"protocol\n");
 		kfree(p);
 		goto error_handling_wq;
 	}
