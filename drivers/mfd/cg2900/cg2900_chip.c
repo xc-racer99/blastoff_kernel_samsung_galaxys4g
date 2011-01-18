@@ -49,11 +49,19 @@
 #define PATCH_INFO_FILE				"cg2900_patch_info.fw"
 #define FACTORY_SETTINGS_INFO_FILE		"cg2900_settings_info.fw"
 
+/*
+ * After waiting the first 500 ms we should just try to get the selftest results
+ * for another number of poll attempts
+ */
+#define MAX_NBR_OF_POLLS			50
+
 #define LINE_TOGGLE_DETECT_TIMEOUT		50	/* ms */
 #define CHIP_READY_TIMEOUT			100	/* ms */
 #define CHIP_STARTUP_TIMEOUT			15000	/* ms */
 #define CHIP_SHUTDOWN_TIMEOUT			15000	/* ms */
 #define POWER_SW_OFF_WAIT			500	/* ms */
+#define SELFTEST_INITIAL			500	/* ms */
+#define SELFTEST_POLLING			20	/* ms */
 
 /** CHANNEL_BT_CMD - Bluetooth HCI H:4 channel
  * for Bluetooth commands in the ST-Ericsson connectivity controller.
@@ -179,6 +187,8 @@ enum main_state {
  *					patches.
  * @BOOT_ACTIVATE_PATCHES_AND_SETTINGS:	CG2900 chip driver is activating patches
  *					and settings.
+ * @BOOT_READ_SELFTEST_RESULT:		CG2900 is performing selftests that
+ *					shall be read out.
  * @BOOT_DISABLE_BT:			Disable BT Core.
  * @BOOT_READY:				CG2900 chip driver boot is ready.
  * @BOOT_FAILED:			CG2900 chip driver boot failed.
@@ -189,6 +199,7 @@ enum boot_state {
 	BOOT_GET_FILES_TO_LOAD,
 	BOOT_DOWNLOAD_PATCH,
 	BOOT_ACTIVATE_PATCHES_AND_SETTINGS,
+	BOOT_READ_SELFTEST_RESULT,
 	BOOT_DISABLE_BT,
 	BOOT_READY,
 	BOOT_FAILED
@@ -259,6 +270,16 @@ struct cg2900_channel_item {
 };
 
 /**
+ * struct cg2900_delayed_work_struct - Work structure for CG2900 chip.
+ * @delayed_work:	Work structure.
+ * @data:		Pointer to private data.
+ */
+struct cg2900_delayed_work_struct{
+	struct delayed_work	work;
+	void			*data;
+};
+
+/**
  * struct cg2900_skb_data - Structure for storing private data in an sk_buffer.
  * @dev:	CG2900 device for this sk_buffer.
  */
@@ -306,6 +327,9 @@ struct cg2900_skb_data {
  *				this will never be set for bt_audio and
  *				fm_audio.
  * @logger:			Logger user of this chip.
+ * @selftest_work:		Delayed work for reading selftest results.
+ * @nbr_of_polls:		Number of times we should poll for selftest
+ *				results.
  */
 struct cg2900_chip_info {
 	struct device			*dev;
@@ -336,6 +360,8 @@ struct cg2900_chip_info {
 	struct cg2900_user_data		*logger;
 	struct cg2900_user_data		*bt_audio;
 	struct cg2900_user_data		*fm_audio;
+	struct cg2900_delayed_work_struct	selftest_work;
+	int				nbr_of_polls;
 };
 
 /**
@@ -358,6 +384,7 @@ static struct main_info *main_info;
 static DECLARE_WAIT_QUEUE_HEAD(main_wait_queue);
 
 static void chip_startup_finished(struct cg2900_chip_info *info, int err);
+static void chip_shutdown(struct cg2900_user_data *user);
 
 /**
  * bt_is_open() - Checks if any BT user is in open state.
@@ -1081,6 +1108,28 @@ shut_down_chip:
 }
 
 /**
+ * work_chip_shutdown() - Shut down the chip.
+ * @work:	Reference to work data.
+ */
+static void work_chip_shutdown(struct work_struct *work)
+{
+	struct cg2900_work *my_work;
+	struct cg2900_user_data *user;
+
+	if (!work) {
+		dev_err(MAIN_DEV, "work_chip_shutdown: work == NULL\n");
+		return;
+	}
+
+	my_work = container_of(work, struct cg2900_work, work);
+	user = my_work->user_data;
+
+	chip_shutdown(user);
+
+	kfree(my_work);
+}
+
+/**
  * work_reset_after_error() - Handle reset.
  * @work:	Reference to work data.
  *
@@ -1250,6 +1299,37 @@ static void work_cont_file_download(struct work_struct *work)
 }
 
 /**
+ * work_send_read_selftest_cmd() - HCI VS Read_SelfTests_Result command shall be sent.
+ * @work:	Reference to work data.
+ */
+static void work_send_read_selftest_cmd(struct work_struct *work)
+{
+	struct delayed_work *del_work;
+	struct cg2900_delayed_work_struct *current_work;
+	struct cg2900_chip_info *info;
+	struct hci_command_hdr cmd;
+
+	if (!work) {
+		dev_err(MAIN_DEV,
+			"work_send_read_selftest_cmd: work == NULL\n");
+		return;
+	}
+
+	del_work = to_delayed_work(work);
+	current_work = container_of(del_work,
+				    struct cg2900_delayed_work_struct, work);
+	info = current_work->data;
+
+	if (info->boot_state != BOOT_READ_SELFTEST_RESULT)
+		return;
+
+	cmd.opcode = cpu_to_le16(CG2900_BT_OP_VS_READ_SELTESTS_RESULT);
+	cmd.plen = 0; /* No parameters for Read Selftests Result */
+	cg2900_send_bt_cmd(info->user_in_charge, info->logger, &cmd,
+			   sizeof(cmd));
+}
+
+/**
  * handle_reset_cmd_complete() - Handles HCI Reset Command Complete event.
  * @data:	Pointer to received HCI data packet.
  *
@@ -1265,7 +1345,7 @@ static bool handle_reset_cmd_complete(struct cg2900_chip_dev *dev, u8 *data)
 	dev_dbg(BOOT_DEV, "Received Reset complete event with status 0x%X\n",
 		status);
 
-	if (CG2900_CLOSING != info->main_state ||
+	if (CG2900_CLOSING != info->main_state &&
 	    CLOSING_RESET != info->closing_state)
 		return false;
 
@@ -1449,7 +1529,6 @@ static bool handle_vs_system_reset_cmd_complete(struct cg2900_chip_dev *dev,
 						u8 *data)
 {
 	u8 status = data[0];
-	struct bt_vs_bt_enable_cmd cmd;
 	struct cg2900_chip_info *info = dev->c_data;
 
 	if (info->boot_state != BOOT_ACTIVATE_PATCHES_AND_SETTINGS)
@@ -1460,16 +1539,16 @@ static bool handle_vs_system_reset_cmd_complete(struct cg2900_chip_dev *dev,
 
 	if (HCI_BT_ERROR_NO_ERROR == status) {
 		/*
-		 * We are now almost finished. Shut off BT Core. It will be
-		 * re-enabled by the Bluetooth driver when needed.
+		 * We must now wait for the selftest results. They will take a
+		 * certain amount of time to finish so start a delayed work that
+		 * will then send the command.
 		 */
-		dev_dbg(BOOT_DEV, "New boot_state: BOOT_DISABLE_BT\n");
-		info->boot_state = BOOT_DISABLE_BT;
-		cmd.op_code = cpu_to_le16(CG2900_BT_OP_VS_BT_ENABLE);
-		cmd.plen = BT_PARAM_LEN(sizeof(cmd));
-		cmd.enable = CG2900_BT_DISABLE;
-		cg2900_send_bt_cmd(info->user_in_charge, info->logger, &cmd,
-				   sizeof(cmd));
+		dev_dbg(BOOT_DEV,
+			"New boot_state: BOOT_READ_SELFTEST_RESULT\n");
+		info->boot_state = BOOT_READ_SELFTEST_RESULT;
+		queue_delayed_work(info->wq, &info->selftest_work.work,
+				   msecs_to_jiffies(SELFTEST_INITIAL));
+		info->nbr_of_polls = 0;
 	} else {
 		dev_err(BOOT_DEV,
 			"Received Reset complete event with status 0x%X\n",
@@ -1479,6 +1558,78 @@ static bool handle_vs_system_reset_cmd_complete(struct cg2900_chip_dev *dev,
 		chip_startup_finished(info, -EIO);
 	}
 
+	return true;
+}
+
+/**
+ * handle_vs_read_selftests_cmd_complete() - Handle HCI VS ReadSelfTestsResult Command Complete event.
+ * @dev:	Current chip.
+ * @data:	Pointer to received HCI data packet.
+ *
+ * Returns:
+ *   true,  if packet was handled internally,
+ *   false, otherwise.
+ */
+static bool handle_vs_read_selftests_cmd_complete(struct cg2900_chip_dev *dev,
+						  u8 *data)
+{
+	struct bt_vs_read_selftests_result_evt *evt =
+			(struct bt_vs_read_selftests_result_evt *)data;
+	struct cg2900_chip_info *info = dev->c_data;
+
+	if (info->boot_state != BOOT_READ_SELFTEST_RESULT)
+		return false;
+
+	dev_dbg(BOOT_DEV,
+		"handle_vs_read_selftests_cmd_complete status %d result %d\n",
+		evt->status, evt->result);
+
+	if (HCI_BT_ERROR_NO_ERROR != evt->status)
+		goto err_handling;
+
+	if (CG2900_BT_SELFTEST_SUCCESSFUL == evt->result ||
+	    CG2900_BT_SELFTEST_FAILED == evt->result) {
+		struct bt_vs_bt_enable_cmd cmd;
+
+		if (CG2900_BT_SELFTEST_FAILED == evt->result)
+			dev_err(BOOT_DEV, "CG2900 self test failed\n");
+
+		/*
+		 * We are now almost finished. Shut off BT Core. It will
+		 * be re-enabled by the Bluetooth driver when needed.
+		 */
+		dev_dbg(BOOT_DEV, "New boot_state: BOOT_DISABLE_BT\n");
+		info->boot_state = BOOT_DISABLE_BT;
+		cmd.op_code = cpu_to_le16(CG2900_BT_OP_VS_BT_ENABLE);
+		cmd.plen = BT_PARAM_LEN(sizeof(cmd));
+		cmd.enable = CG2900_BT_DISABLE;
+		cg2900_send_bt_cmd(info->user_in_charge, info->logger,
+				   &cmd, sizeof(cmd));
+		return true;
+	} else if (CG2900_BT_SELFTEST_NOT_COMPLETED == evt->result) {
+		/*
+		 * Self tests are not yet finished. Wait some more time
+		 * before resending the command
+		 */
+		if (info->nbr_of_polls > MAX_NBR_OF_POLLS) {
+			dev_err(BOOT_DEV, "Selftest results reached max"
+				" number of polls\n");
+			goto err_handling;
+		}
+		queue_delayed_work(info->wq, &info->selftest_work.work,
+				   msecs_to_jiffies(SELFTEST_POLLING));
+		info->nbr_of_polls++;
+		return true;
+	}
+
+err_handling:
+	dev_err(BOOT_DEV,
+		"Received Read SelfTests Result complete event with "
+		"status 0x%X and result 0x%X\n",
+		evt->status, evt->result);
+	dev_dbg(BOOT_DEV, "New boot_state: BOOT_FAILED\n");
+	info->boot_state = BOOT_FAILED;
+	chip_startup_finished(info, -EIO);
 	return true;
 }
 
@@ -1611,6 +1762,9 @@ static bool handle_rx_data_bt_evt(struct cg2900_chip_dev *dev,
 		else if (op_code == CG2900_BT_OP_VS_BT_ENABLE)
 			pkt_handled = handle_vs_bt_enable_cmd_complete(dev,
 								       data);
+		else if (op_code == CG2900_BT_OP_VS_READ_SELTESTS_RESULT)
+			pkt_handled = handle_vs_read_selftests_cmd_complete(dev,
+									data);
 	} else if (HCI_EV_CMD_STATUS == evt->evt) {
 		struct hci_ev_cmd_status *cmd_status;
 
@@ -1951,6 +2105,7 @@ static void chip_removed(struct cg2900_chip_dev *dev)
 {
 	struct cg2900_chip_info *info = dev->c_data;
 
+	cancel_delayed_work(&info->selftest_work.work);
 	mfd_remove_devices(dev->dev);
 	kfree(info->settings_file_name);
 	kfree(info->patch_file_name);
@@ -2054,7 +2209,8 @@ static void chip_startup_finished(struct cg2900_chip_info *info, int err)
 
 	if (err)
 		/* Shutdown the chip */
-		chip_shutdown(info->user_in_charge);
+		cg2900_create_work_item(info->wq, work_chip_shutdown,
+					info->user_in_charge);
 	else {
 		dev_dbg(BOOT_DEV, "New main_state: CG2900_ACTIVE\n");
 		info->main_state = CG2900_ACTIVE;
@@ -3084,6 +3240,10 @@ static bool check_chip_support(struct cg2900_chip_dev *dev)
 			"Couldn't allocate name buffers settings file\n");
 		goto err_handling_free_patch_name;
 	}
+
+	info->selftest_work.data = info;
+	INIT_DELAYED_WORK(&info->selftest_work.work,
+			  work_send_read_selftest_cmd);
 
 	dev->c_data = info;
 	/* Set the callbacks */

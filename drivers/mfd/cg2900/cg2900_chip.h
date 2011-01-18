@@ -119,6 +119,17 @@ struct bt_vs_set_baud_rate_cmd {
 	__u8	baud_rate;
 } __attribute__((packed));
 
+#define CG2900_BT_SELFTEST_SUCCESSFUL			0x00
+#define CG2900_BT_SELFTEST_FAILED			0x01
+#define CG2900_BT_SELFTEST_NOT_COMPLETED		0x02
+
+/* BT VS ReadSelfTestsResult command & event */
+#define CG2900_BT_OP_VS_READ_SELTESTS_RESULT		0xFC10
+struct bt_vs_read_selftests_result_evt {
+	__u8	status;
+	__u8	result;
+} __attribute__((packed));
+
 /* Bluetooth Vendor Specific Opcodes */
 #define CG2900_BT_OP_VS_POWER_SWITCH_OFF		0xFD40
 #define CG2900_BT_OP_VS_SYSTEM_RESET			0xFF12
