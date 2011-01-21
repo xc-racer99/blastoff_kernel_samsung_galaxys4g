@@ -46,8 +46,6 @@
 #define BOOT_DEV				(info->user_in_charge->dev)
 
 #define WQ_NAME					"stlc2690_chip_wq"
-#define PATCH_INFO_FILE				"cg2900_patch_info.fw"
-#define FACTORY_SETTINGS_INFO_FILE		"cg2900_settings_info.fw"
 
 #define LINE_TOGGLE_DETECT_TIMEOUT		50	/* ms */
 #define CHIP_READY_TIMEOUT			100	/* ms */
@@ -328,10 +326,12 @@ static void send_settings_file(struct stlc2690_chip_info *info)
  * transmitted, the file is closed.
  * When finished, continue with settings file.
  */
-static void send_patch_file(struct stlc2690_chip_info *info)
+static void send_patch_file(struct cg2900_chip_dev *dev)
 {
 	int err;
 	int bytes_sent;
+	struct stlc2690_chip_info *info = dev->c_data;
+	int file_name_size = strlen("STLC2690_XXXX_XXXX_settings.fw");
 
 	bytes_sent = cg2900_read_and_send_file_part(info->user_in_charge,
 						    info->logger,
@@ -352,6 +352,23 @@ static void send_patch_file(struct stlc2690_chip_info *info)
 	dev_dbg(BOOT_DEV, "Patch file finished, release used resources\n");
 	release_firmware(info->file_info.fw_file);
 	info->file_info.fw_file = NULL;
+
+	/*
+	 * Create the settings file name from HCI revision and sub_version.
+	 * file_name_size does not include terminating NULL character
+	 * so add 1.
+	 */
+	err = snprintf(info->settings_file_name, file_name_size + 1,
+			"STLC2690_%04X_%04X_settings.fw",
+			dev->chip.hci_revision, dev->chip.hci_sub_version);
+	if (err == file_name_size) {
+		dev_dbg(BOOT_DEV, "Downloading settings file %s\n",
+				info->settings_file_name);
+	} else {
+		dev_err(BOOT_DEV, "Settings file name failed! err=%d\n", err);
+		goto error_handling;
+	}
+
 	/* Retrieve the settings file */
 	err = request_firmware(&info->file_info.fw_file,
 			       info->settings_file_name,
@@ -408,12 +425,10 @@ static void work_reset_after_error(struct work_struct *work)
 static void work_load_patch_and_settings(struct work_struct *work)
 {
 	int err = 0;
-	bool file_found;
-	const struct firmware *patch_info;
-	const struct firmware *settings_info;
 	struct cg2900_work *my_work;
 	struct cg2900_chip_dev *dev;
 	struct stlc2690_chip_info *info;
+	int file_name_size = strlen("STLC2690_XXXX_XXXX_patch.fw");
 
 	if (!work) {
 		dev_err(MAIN_DEV,
@@ -429,54 +444,19 @@ static void work_load_patch_and_settings(struct work_struct *work)
 	if (info->boot_state != BOOT_GET_FILES_TO_LOAD)
 		goto finished;
 
-	/* Open patch info file. */
-	err = request_firmware(&patch_info, PATCH_INFO_FILE,
-			       dev->dev);
-	if (err) {
-		dev_err(BOOT_DEV, "Couldn't get patch info file (%d)\n", err);
-		goto error_handling;
-	}
-
 	/*
-	 * Now we have the patch info file.
-	 * See if we can find the right patch file as well
+	 * Create the patch file name from HCI revision and sub_version.
+	 * file_name_size does not include terminating NULL character
+	 * so add 1.
 	 */
-	file_found = cg2900_get_file_name(patch_info, &info->patch_file_name,
-					  info->chip_dev->chip.hci_revision,
-					  info->chip_dev->chip.hci_sub_version);
-
-	/* Now we are finished with the patch info file */
-	release_firmware(patch_info);
-
-	if (!file_found) {
-		dev_err(BOOT_DEV, "Couldn't find patch file! Major error\n");
-		goto error_handling;
-	}
-
-	/* Open settings info file. */
-	err = request_firmware(&settings_info,
-			       FACTORY_SETTINGS_INFO_FILE,
-			       dev->dev);
-	if (err) {
-		dev_err(BOOT_DEV, "Couldn't get settings info file (%d)\n",
-			err);
-		goto error_handling;
-	}
-
-	/*
-	 * Now we have the settings info file.
-	 * See if we can find the right settings file as well.
-	 */
-	file_found = cg2900_get_file_name(settings_info,
-					  &info->settings_file_name,
-					  info->chip_dev->chip.hci_revision,
-					  info->chip_dev->chip.hci_sub_version);
-
-	/* Now we are finished with the patch info file */
-	release_firmware(settings_info);
-
-	if (!file_found) {
-		dev_err(BOOT_DEV, "Couldn't find settings file! Major error\n");
+	err = snprintf(info->patch_file_name, file_name_size + 1,
+			"STLC2690_%04X_%04X_patch.fw", dev->chip.hci_revision,
+			dev->chip.hci_sub_version);
+	if (err == file_name_size) {
+		dev_dbg(BOOT_DEV, "Downloading patch file %s\n",
+				info->patch_file_name);
+	} else {
+		dev_err(BOOT_DEV, "Patch file name failed! err=%d\n", err);
 		goto error_handling;
 	}
 
@@ -499,7 +479,7 @@ static void work_load_patch_and_settings(struct work_struct *work)
 		dev_err(BOOT_DEV, "Couldn't get patch file (%d)\n", err);
 		goto error_handling;
 	}
-	send_patch_file(info);
+	send_patch_file(dev);
 
 	goto finished;
 
@@ -535,7 +515,7 @@ static void work_cont_file_download(struct work_struct *work)
 
 	/* Continue to send patches or settings to the controller */
 	if (info->file_load_state == FILE_LOAD_GET_PATCH)
-		send_patch_file(info);
+		send_patch_file(dev);
 	else if (info->file_load_state == FILE_LOAD_GET_STATIC_SETTINGS)
 		send_settings_file(info);
 	else

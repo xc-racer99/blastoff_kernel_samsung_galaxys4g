@@ -139,18 +139,6 @@ fw-shipped-$(CONFIG_USB_SERIAL_XIRCOM) += keyspan_pda/xircom_pgs.fw
 fw-shipped-$(CONFIG_USB_VICAM) += vicam/firmware.fw
 fw-shipped-$(CONFIG_VIDEO_CPIA2) += cpia2/stv0672_vp4.bin
 fw-shipped-$(CONFIG_YAM) += yam/1200.bin yam/9600.bin
-fw-shipped-$(CONFIG_MFD_CG2900) += cg2900_patch_info.fw cg2900_settings_info.fw \
-					STLC2600_R6_03_01.fw STLC2690_R6_03_A1_E5.fw \
-					STLC2600_R6_04_02.fw STLC2690_R6_04_A2.fw \
-					CG2900_1_0C4_1C5.fw CG2900_1_05_SOC_generic_V11_mod.fw \
-					CG2900_HREFP_SOC_2.0_4C2.fw CG2900_BTARMSS_2.0P4C2.fw
-
-fw-shipped-$(CONFIG_RADIO_CG2900) += cg2900_fm_bt_src_coeff_info.fw cg2900_fm_ext_src_coeff_info.fw \
-					cg2900_fm_fm_coeff_info.fw cg2900_fm_fm_prog_info.fw \
-					R1f.2_SoC1v20_BT_src_coeff_1.1.fw R1f.2_SoC1v20_EXT_src_coeff_1.1.fw \
-					R1f.2_SoC1v20_Cobra_FM_SOC1_coef.fw R1f.2_SoC1v20_Cobra_FM_SOC1_prog.fw \
-					R2c.2_SoC2v03_BT_src_coeff_1.1.fw R2c.2_SoC2v03_EXT_src_coeff_1.1.fw \
-					R2c.2_SoC2v03_Cobra_FM_SOC2_coef.fw R2c.2_SoC2v03_Cobra_FM_SOC2_prog.fw
 
 fw-shipped-all := $(fw-shipped-y) $(fw-shipped-m) $(fw-shipped-)
 

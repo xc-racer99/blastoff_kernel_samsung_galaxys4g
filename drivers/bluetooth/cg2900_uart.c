@@ -466,7 +466,7 @@ static int set_cts_irq(struct uart_info *uart_info)
 	 */
 	cts_val = gpio_get_value(uart_info->cts_gpio);
 	if (!cts_val) {
-		dev_err(MAIN_DEV, "Missed interrupt, going back to "
+		dev_dbg(MAIN_DEV, "Missed interrupt, going back to "
 			"awake state\n");
 		free_irq(uart_info->cts_irq, uart_info->dev);
 		err = -ECANCELED;
@@ -634,8 +634,6 @@ static void set_chip_sleep_mode(struct work_struct *work)
 							ZERO_BAUD_RATE);
 		err = set_cts_irq(uart_info);
 		if (err < 0) {
-			dev_err(MAIN_DEV, "Can not set interrupt on CTS, "
-							"err:%d\n", err);
 			(void)hci_uart_set_baudrate(uart_info->hu,
 							uart_info->baud_rate);
 			hci_uart_flow_ctrl(uart_info->hu, FLOW_ON);
@@ -646,8 +644,11 @@ static void set_chip_sleep_mode(struct work_struct *work)
 
 			if (err == -ECANCELED)
 				goto finished;
-			else
+			else {
+				dev_err(MAIN_DEV, "Can not set interrupt on "
+						"CTS, err:%d\n", err);
 				goto error;
+			}
 		}
 
 		dev_dbg(MAIN_DEV, "New sleep_state: CHIP_ASLEEP\n");

@@ -50,10 +50,6 @@ extern void cg2900_send_bt_cmd_no_user(struct cg2900_chip_dev *dev, void *data,
 extern void cg2900_create_work_item(struct workqueue_struct *wq,
 				    work_func_t work_func,
 				    void *user_data);
-extern char *cg2900_get_text_line(char *wr_buffer, int max_nbr_of_bytes,
-				  char *rd_buffer, int *bytes_copied);
-extern bool cg2900_get_file_name(const struct firmware *fw, char **file_name,
-				 u16 hci_revision, u16 hci_sub_version);
 extern int cg2900_read_and_send_file_part(struct cg2900_user_data *user,
 					  struct cg2900_user_data *logger,
 					  struct cg2900_file_info *info);
