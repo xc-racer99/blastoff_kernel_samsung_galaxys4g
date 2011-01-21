@@ -25,7 +25,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/sched.h>
 #include <linux/skbuff.h>
+#include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/mfd/cg2900.h>
@@ -42,6 +44,9 @@
 #define CG2900_PG1_HCI_REV		0x0101
 #define CG2900_PG2_HCI_REV		0x0200
 #define CG2900_PG1_SPECIAL_HCI_REV	0x0700
+
+#define CHIP_INITIAL_HIGH_TIMEOUT	5 /* ms */
+#define CHIP_INITIAL_LOW_TIMEOUT	2 /* us */
 
 struct vs_power_sw_off_cmd {
 	__le16	op_code;
@@ -64,14 +69,38 @@ struct dcg2900_info {
 	u8	gpio_0_7_pull_down;
 	u8	gpio_8_15_pull_down;
 	u8	gpio_16_20_pull_down;
+	spinlock_t	pdb_toggle_lock;
 };
 
 static void dcg2900_enable_chip(struct cg2900_chip_dev *dev)
 {
 	struct dcg2900_info *info = dev->b_data;
+	unsigned long flags;
 
-	if (info->gbf_gpio != -1)
-		gpio_set_value(info->gbf_gpio, 1);
+	if (info->gbf_gpio == -1)
+		return;
+
+	/*
+	 * Due to a bug in some CG2900 we cannot just set GPIO high to enable
+	 * the chip. We must do the following:
+	 * 1: Set PDB high
+	 * 2: Wait a few milliseconds
+	 * 3: Set PDB low
+	 * 4: Wait 2 microseconds
+	 * 5: Set PDB high
+	 * We disable interrupts step 3-5 to assure that step 4 does not take
+	 * too long time (which would invalidate the fix).
+	 */
+	gpio_set_value(info->gbf_gpio, 1);
+
+	schedule_timeout_interruptible(
+			msecs_to_jiffies(CHIP_INITIAL_HIGH_TIMEOUT));
+
+	spin_lock_irqsave(&info->pdb_toggle_lock, flags);
+	gpio_set_value(info->gbf_gpio, 0);
+	udelay(CHIP_INITIAL_LOW_TIMEOUT);
+	gpio_set_value(info->gbf_gpio, 1);
+	spin_unlock_irqrestore(&info->pdb_toggle_lock, flags);
 }
 
 static void dcg2900_disable_chip(struct cg2900_chip_dev *dev)
@@ -176,6 +205,8 @@ static int dcg2900_init(struct cg2900_chip_dev *dev)
 		dev_err(dev->dev, "Could not allocate dcg2900_info\n");
 		return -ENOMEM;
 	}
+
+	spin_lock_init(&info->pdb_toggle_lock);
 
 	if (!dev->pdev->num_resources) {
 		dev_dbg(dev->dev, "No resources available\n");
