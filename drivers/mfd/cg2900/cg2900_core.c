@@ -55,7 +55,7 @@
  */
 #define CHIP_READY_TIMEOUT		(100)	/* ms */
 #define REVISION_READOUT_TIMEOUT	(500)	/* ms */
-#define SLEEP_TIMEOUT_MS		(500)	/* ms */
+#define SLEEP_TIMEOUT_MS		(10000)	/* ms */
 
 /**
  * enum boot_state - BOOT-state for CG2900 Core.
@@ -697,7 +697,7 @@ module_exit(cg2900_exit);
 module_param(sleep_timeout_ms, int, S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(sleep_timeout_ms,
 		 "Sleep timeout for data transmissions:\n"
-		 "\tDefault 500 ms\n"
+		 "\tDefault 10000 ms\n"
 		 "\t0 = disable\n"
 		 "\t>0 = sleep timeout in milliseconds");
 
