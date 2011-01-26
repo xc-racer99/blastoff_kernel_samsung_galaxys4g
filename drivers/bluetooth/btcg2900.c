@@ -31,11 +31,6 @@
 #include <net/bluetooth/hci.h>
 #include <net/bluetooth/hci_core.h>
 
-#define BT_VS_BT_ENABLE			0xFF10
-
-#define VS_BT_DISABLE			0x00
-#define VS_BT_ENABLE			0x01
-
 #define BT_HEADER_LENGTH		0x03
 
 #define STLC2690_HCI_REV		0x0600
@@ -74,6 +69,14 @@ enum reset_state {
  *					complete event from the BT chip as a
  *					response to a BT Enable (true) command.
  * @ENABLE_BT_ENABLED:			The BT chip is enabled.
+ * @ENABLE_WAITING_EPTA_RESET_CC:	The HCI driver is waiting for a command
+ *					complete event from the BT chip as a
+ *					response to EPTA Mode reset command.
+ * @ENABLE_EPTA_RESET:			The ePTA is reset.
+ * @ENABLE_WAITING_EPTA_ENABLED_CC:	The HCI driver is waiting for a command
+ *					complete event from the BT chip as a
+ *					response to EPTA Mode enable command.
+ * @ENABLE_EPTA_ENABLED:		The ePTA is enabled.
  * @ENABLE_WAITING_BT_DISABLED_CC:	The HCI driver is waiting for a command
  *					complete event from the BT chip as a
  *					response to a BT Enable (false) command.
@@ -86,10 +89,17 @@ enum enable_state {
 	ENABLE_IDLE,
 	ENABLE_WAITING_BT_ENABLED_CC,
 	ENABLE_BT_ENABLED,
+	ENABLE_WAITING_EPTA_RESET_CC,
+	ENABLE_EPTA_RESET,
+	ENABLE_WAITING_EPTA_ENABLED_CC,
+	ENABLE_EPTA_ENABLED,
 	ENABLE_WAITING_BT_DISABLED_CC,
 	ENABLE_BT_DISABLED,
 	ENABLE_BT_ERROR
 };
+
+/* Defines which state the driver has when BT is active */
+#define BTCG2900_ACTIVE_STATE		ENABLE_EPTA_ENABLED
 
 /**
  * struct btcg2900_info - Specifies HCI driver private data.
@@ -119,6 +129,25 @@ struct btcg2900_info {
 };
 
 /**
+ * struct enable_info - Specifies data for sending enable commands.
+ *
+ * @enable:		True if command should enable the functionality.
+ * @name:		Name of the command, only informative.
+ * @get_cmd:		Function for retrieving command.
+ * @success:		State to set upon success.
+ * @awaiting_cc:	State to set while waiting for response.
+ * @failed:		State to set upon failure.
+ */
+struct enable_info {
+	bool	enable;
+	char	*name;
+	struct sk_buff* (*get_cmd)(struct btcg2900_info *info, bool enable);
+	enum enable_state success;
+	enum enable_state awaiting_cc;
+	enum enable_state failed;
+};
+
+/**
  * struct dev_info - Specifies private data used when receiving callbacks from CG2900 driver.
  *
  * @hci_data_type:	Type of data according to BlueZ.
@@ -126,6 +155,11 @@ struct btcg2900_info {
 struct dev_info {
 	u8	hci_data_type;
 };
+
+/* Defines for vs_bt_enable_cmd */
+#define BT_VS_BT_ENABLE			0xFF10
+#define VS_BT_DISABLE			0x00
+#define VS_BT_ENABLE			0x01
 
 /**
  * struct vs_bt_enable_cmd - Specifies HCI VS Bluetooth_Enable command.
@@ -140,6 +174,47 @@ struct vs_bt_enable_cmd {
 	u8	enable;
 } __attribute__((packed));
 
+/* Defines for vs_write_epta_mode_cmd */
+#define BT_VS_WRITE_EPTA_MODE			0xFCDD
+#define EPTA_ENABLE				0x01
+#define EPTA_WLAN_AWAKE				0x02
+#define EPTA_KEEP_TRANSMITTING			0x04
+#define EPTA_FORWARD_RX_MESSAGES		0x08
+#define EPTA_FORWARD_TX_MESSAGES		0x10
+#define EPTA_LOOP_TX_MESSAGES_FROM_HOST		0x20
+#define EPTA_ENABLE_PUSH_PULL			0x40
+#define EPTA_ENABLE_ROBUST_MODE			0x80
+
+#define EPTA_ENABLE_FLAGS	(EPTA_ENABLE | EPTA_WLAN_AWAKE | \
+				 EPTA_KEEP_TRANSMITTING | \
+				 EPTA_ENABLE_PUSH_PULL | \
+				 EPTA_ENABLE_ROBUST_MODE)
+#define EPTA_SUPERVISION_TO	0x0800
+#define EPTA_PERIODIC_TO	0x0000
+#define EPTA_CLOCK_M		0x0000
+#define EPTA_CLOCK_N		0x0000
+
+/**
+ * struct vs_write_epta_mode_cmd - Specifies HCI VS WriteEptaMode command.
+ *
+ * @op_code:			HCI command op code.
+ * @len:			Parameter length of command.
+ * @epta_flags:			Flags to control ePTA mode.
+ * @supervision_timeout:	Supervision timeout in BT half-slots (optional).
+ * @periodic_timeout:		Periodic timeout in BT half-slots (optional).
+ * @clock_m:			Serial interface clock setting (optional).
+ * @clock_n:			Serial interface clock setting (optional).
+ */
+struct vs_write_epta_mode_cmd {
+	__le16	op_code;
+	u8	len;
+	u8	epta_flags;
+	__le16	supervision_timeout;
+	__le16	periodic_timeout;
+	u8	clock_m;
+	u8	clock_n;
+} __attribute__((packed));
+
 /*
  * hci_wait_queue - Main Wait Queue in HCI driver.
  */
@@ -148,7 +223,7 @@ static DECLARE_WAIT_QUEUE_HEAD(hci_wait_queue);
 /*
  * btcg2900_devices - List of active CG2900 BT devices.
  */
-LIST_HEAD(btcg2900_devices);
+static LIST_HEAD(btcg2900_devices);
 
 /* Internal function declarations */
 static int register_bluetooth(struct btcg2900_info *info);
@@ -164,7 +239,8 @@ static int register_bluetooth(struct btcg2900_info *info);
  *   NULL if no command shall be sent,
  *   sk_buffer with command otherwise.
  */
-struct sk_buff *get_bt_enable_cmd(struct btcg2900_info *info, bool bt_enable)
+static struct sk_buff *get_bt_enable_cmd(struct btcg2900_info *info,
+					 bool bt_enable)
 {
 	struct sk_buff *skb;
 	struct vs_bt_enable_cmd *cmd;
@@ -203,6 +279,58 @@ struct sk_buff *get_bt_enable_cmd(struct btcg2900_info *info, bool bt_enable)
 }
 
 /**
+ * get_epta_mode_cmd() - Get HCI Write ePTA Mode command.
+ * @info:		Device info structure.
+ * @epta_enable:	true if ePTA shall be enabled, false otherwise.
+ *
+ * Returns:
+ *   NULL if no command shall be sent,
+ *   sk_buffer with command otherwise.
+ */
+static struct sk_buff *get_epta_mode_cmd(struct btcg2900_info *info,
+					 bool epta_enable)
+{
+	struct sk_buff *skb;
+	struct vs_write_epta_mode_cmd *cmd;
+	struct cg2900_rev_data rev_data;
+	struct cg2900_user_data *pf_data;
+
+	pf_data = dev_get_platdata(info->cmd);
+
+	if (!pf_data->get_local_revision(pf_data, &rev_data)) {
+		BT_ERR(NAME "Couldn't get revision");
+		return NULL;
+	}
+
+	/* If connected chip does not support the command return NULL */
+	if (CG2900_PG1_SPECIAL_HCI_REV != rev_data.revision &&
+	    CG2900_PG1_HCI_REV != rev_data.revision &&
+	    CG2900_PG2_HCI_REV != rev_data.revision)
+		return NULL;
+
+	/* CG2900 used */
+	skb = pf_data->alloc_skb(sizeof(*cmd), GFP_KERNEL);
+	if (!skb) {
+		BT_ERR(NAME "Could not allocate skb");
+		return NULL;
+	}
+
+	cmd = (struct vs_write_epta_mode_cmd *)skb_put(skb, sizeof(*cmd));
+	cmd->op_code = cpu_to_le16(BT_VS_WRITE_EPTA_MODE);
+	cmd->len = sizeof(*cmd) - BT_HEADER_LENGTH;
+	if (epta_enable)
+		cmd->epta_flags = EPTA_ENABLE_FLAGS;
+	else
+		cmd->epta_flags = 0x00;
+	cmd->supervision_timeout = cpu_to_le16(EPTA_SUPERVISION_TO);
+	cmd->periodic_timeout = cpu_to_le16(EPTA_PERIODIC_TO);
+	cmd->clock_m = EPTA_CLOCK_M;
+	cmd->clock_n = EPTA_CLOCK_N;
+
+	return skb;
+}
+
+/**
  * close_bt_users() - Close all BT channels.
  * @info:	HCI driver info structure.
  */
@@ -224,6 +352,166 @@ static void close_bt_users(struct btcg2900_info *info)
 }
 
 /**
+ * handle_bt_enable_comp() - Handle received BtEnable Complete event.
+ * @info:	Info structure.
+ * @skb:	Buffer with data coming from device.
+ *
+ * Returns:
+ *   true if data has been handled internally,
+ *   false otherwise.
+ */
+static bool handle_bt_enable_comp(struct btcg2900_info *info, u8 status)
+{
+	if (info->enable_state != ENABLE_WAITING_BT_ENABLED_CC &&
+	    info->enable_state != ENABLE_WAITING_BT_DISABLED_CC)
+		return false;
+	/*
+	 * This is the command complete event for
+	 * the HCI_Cmd_VS_Bluetooth_Enable.
+	 * Check result and update state.
+	 *
+	 * The BT chip is enabled/disabled. Either it was enabled/
+	 * disabled now (status NO_ERROR) or it was already enabled/
+	 * disabled (assuming status CMD_DISALLOWED is already enabled/
+	 * disabled).
+	 */
+	if (status != HCI_ERR_NO_ERROR && status != HCI_ERR_CMD_DISALLOWED) {
+		BT_ERR(NAME "Could not enable/disable BT core (0x%X)",
+			   status);
+		BT_DBG("New enable_state: ENABLE_BT_ERROR");
+		info->enable_state = ENABLE_BT_ERROR;
+		goto finished;
+	}
+
+	if (info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) {
+		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
+		info->enable_state = ENABLE_BT_ENABLED;
+		BT_INFO("CG2900 BT core is enabled");
+	} else {
+		BT_DBG("New enable_state: ENABLE_BT_DISABLED");
+		info->enable_state = ENABLE_BT_DISABLED;
+		BT_INFO("CG2900 BT core is disabled");
+	}
+
+finished:
+	/* Wake up whoever is waiting for this result. */
+	wake_up_interruptible_all(&hci_wait_queue);
+	return true;
+}
+
+/**
+ * handle_bt_enable_stat() - Handle received BtEnable Status event.
+ * @info:	Info structure.
+ * @skb:	Buffer with data coming from device.
+ *
+ * Returns:
+ *   true if data has been handled internally,
+ *   false otherwise.
+ */
+static bool handle_bt_enable_stat(struct btcg2900_info *info, u8 status)
+{
+	if (info->enable_state != ENABLE_WAITING_BT_DISABLED_CC &&
+	    info->enable_state != ENABLE_WAITING_BT_ENABLED_CC)
+		return false;
+
+	BT_DBG("HCI Driver received Command Status (BT enable): 0x%X", status);
+	/*
+	 * This is the command status event for the HCI_Cmd_VS_Bluetooth_Enable.
+	 * Just free the packet.
+	 */
+	return true;
+}
+
+/**
+ * handle_epta_mode_comp() - Handle received WriteEptaMode Complete event.
+ * @info:	Info structure.
+ * @skb:	Buffer with data coming from device.
+ *
+ * Returns:
+ *   true if data has been handled internally,
+ *   false otherwise.
+ */
+static bool handle_epta_mode_comp(struct btcg2900_info *info, u8 status)
+{
+	if (info->enable_state != ENABLE_WAITING_EPTA_RESET_CC &&
+	    info->enable_state != ENABLE_WAITING_EPTA_ENABLED_CC)
+		return false;
+
+	/*
+	 * This is the command complete event for the HCI_Cmd_VS_Write_Epta_Mode
+	 * Check result and update state.
+	 */
+	if (status != HCI_ERR_NO_ERROR) {
+		BT_ERR(NAME "Could not enable/reset ePTA (0x%X, %d)",
+			   status, info->enable_state);
+		BT_DBG("New enable_state: ENABLE_BT_ERROR");
+		info->enable_state = ENABLE_BT_ERROR;
+		goto finished;
+	}
+
+	if (info->enable_state == ENABLE_WAITING_EPTA_ENABLED_CC) {
+		BT_DBG("New enable_state: ENABLE_EPTA_ENABLED");
+		info->enable_state = ENABLE_EPTA_ENABLED;
+		BT_DBG("CG2900 ePTA is enabled");
+	} else {
+		BT_DBG("New enable_state: ENABLE_EPTA_RESET");
+		info->enable_state = ENABLE_EPTA_RESET;
+		BT_DBG("CG2900 ePTA is reset");
+	}
+
+finished:
+	/* Wake up whoever is waiting for this result. */
+	wake_up_interruptible_all(&hci_wait_queue);
+	return true;
+}
+
+/**
+ * handle_rx_evt() - Check if received data is response to internal command.
+ * @info:	Info structure.
+ * @skb:	Buffer with data coming from device.
+ *
+ * Returns:
+ *   true if data has been handled internally,
+ *   false otherwise.
+ */
+static bool handle_rx_evt(struct btcg2900_info *info, struct sk_buff *skb)
+{
+	struct hci_event_hdr *evt = (struct hci_event_hdr *)skb->data;
+	struct hci_ev_cmd_complete *cmd_complete;
+	struct hci_ev_cmd_status *cmd_status;
+	u16 op_code;
+	u8 status;
+	bool pkt_handled = false;
+
+	/* If BT is active no internal packets shall be generated */
+	if (info->enable_state == BTCG2900_ACTIVE_STATE)
+		return false;
+
+	if (evt->evt == HCI_EV_CMD_COMPLETE) {
+		cmd_complete = (struct hci_ev_cmd_complete *)(evt + 1);
+		status = *((u8*)(cmd_complete + 1));
+		op_code = le16_to_cpu(cmd_complete->opcode);
+
+		if (op_code == BT_VS_BT_ENABLE)
+			pkt_handled = handle_bt_enable_comp(info, status);
+		else if (op_code == BT_VS_WRITE_EPTA_MODE)
+			pkt_handled = handle_epta_mode_comp(info, status);
+	} else if (evt->evt == HCI_EV_CMD_STATUS) {
+		cmd_status = (struct hci_ev_cmd_status *)(evt + 1);
+		op_code = le16_to_cpu(cmd_status->opcode);
+		status = cmd_status->status;
+
+		if (op_code == BT_VS_BT_ENABLE)
+			pkt_handled = handle_bt_enable_stat(info, status);
+	}
+
+	if (pkt_handled)
+		kfree_skb(skb);
+
+	return pkt_handled;
+}
+
+/**
  * hci_read_cb() - Callback for handling data received from CG2900 driver.
  * @dev:	Device receiving data.
  * @skb:	Buffer with data coming from device.
@@ -233,78 +521,11 @@ static void hci_read_cb(struct cg2900_user_data *user, struct sk_buff *skb)
 	int err = 0;
 	struct dev_info *dev_info;
 	struct btcg2900_info *info;
-	struct hci_event_hdr *evt;
-	struct hci_ev_cmd_complete *cmd_complete;
-	struct hci_ev_cmd_status *cmd_status;
-	u8 status;
 
 	dev_info = cg2900_get_usr(user);
 	info = dev_get_drvdata(user->dev);
 
-	evt = (struct hci_event_hdr *)skb->data;
-	cmd_complete = (struct hci_ev_cmd_complete *)(skb->data + sizeof(*evt));
-	cmd_status = (struct hci_ev_cmd_status *)(skb->data + sizeof(*evt));
-
-	/*
-	 * Check if HCI Driver it self is expecting a Command Complete packet
-	 * from the chip after a BT Enable command.
-	 */
-	if ((info->enable_state == ENABLE_WAITING_BT_ENABLED_CC ||
-	     info->enable_state == ENABLE_WAITING_BT_DISABLED_CC) &&
-	    user->dev == info->evt &&
-	    evt->evt == HCI_EV_CMD_COMPLETE &&
-	    le16_to_cpu(cmd_complete->opcode) == BT_VS_BT_ENABLE) {
-		/*
-		 * This is the command complete event for
-		 * the HCI_Cmd_VS_Bluetooth_Enable.
-		 * Check result and update state.
-		 *
-		 * The BT chip is enabled/disabled. Either it was enabled/
-		 * disabled now (status NO_ERROR) or it was already enabled/
-		 * disabled (assuming status CMD_DISALLOWED is already enabled/
-		 * disabled).
-		 */
-		status = *(skb->data + sizeof(*evt) + sizeof(*cmd_complete));
-		if (status != HCI_ERR_NO_ERROR &&
-		    status != HCI_ERR_CMD_DISALLOWED) {
-			BT_ERR(NAME "Could not enable/disable BT core (0x%X)",
-				   status);
-			BT_DBG("New enable_state: ENABLE_BT_ERROR");
-			info->enable_state = ENABLE_BT_ERROR;
-			goto fin_free_skb;
-		}
-
-		if (info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) {
-			BT_DBG("New enable_state: ENABLE_BT_ENABLED");
-			info->enable_state = ENABLE_BT_ENABLED;
-			BT_INFO("CG2900 BT core is enabled");
-		} else {
-			BT_DBG("New enable_state: ENABLE_BT_DISABLED");
-			info->enable_state = ENABLE_BT_DISABLED;
-			BT_INFO("CG2900 BT core is disabled");
-		}
-
-		/* Wake up whom ever is waiting for this result. */
-		wake_up_interruptible(&hci_wait_queue);
-		goto fin_free_skb;
-	} else if ((info->enable_state == ENABLE_WAITING_BT_DISABLED_CC ||
-		    info->enable_state == ENABLE_WAITING_BT_ENABLED_CC) &&
-		   user->dev == info->evt &&
-		   evt->evt == HCI_EV_CMD_STATUS &&
-		   le16_to_cpu(cmd_status->opcode) == BT_VS_BT_ENABLE) {
-		/*
-		 * Clear the status events since the Bluez is not expecting
-		 * them.
-		 */
-		BT_DBG("HCI Driver received Command Status (BT enable): 0x%X",
-		       cmd_status->status);
-		/*
-		 * This is the command status event for
-		 * the HCI_Cmd_VS_Bluetooth_Enable.
-		 * Just free the packet.
-		 */
-		goto fin_free_skb;
-	} else {
+	if (user->dev != info->evt || !handle_rx_evt(info, skb)) {
 		bt_cb(skb)->pkt_type = dev_info->hci_data_type;
 		skb->dev = (struct net_device *)info->hdev;
 		/* Update BlueZ stats */
@@ -323,11 +544,6 @@ static void hci_read_cb(struct cg2900_user_data *user, struct sk_buff *skb)
 			BT_ERR(NAME "Failed in supplying packet to Bluetooth"
 			       " stack (%d)", err);
 	}
-
-	return;
-
-fin_free_skb:
-	kfree_skb(skb);
 }
 
 /**
@@ -392,6 +608,70 @@ static void hci_reset_cb(struct cg2900_user_data *dev)
 }
 
 /**
+ * send_enable_cmd() - Send a command with only enable/disable functionality.
+ * @info:	Info structure.
+ * @en_info:	Enable info structure.
+ *
+ * Returns:
+ *   0 if successful,
+ *   -EACCES if correct response to command is not received,
+ *   Error codes from CG2900 write.
+ */
+static int send_enable_cmd(struct btcg2900_info *info,
+			   struct enable_info *en_info)
+{
+	struct sk_buff *enable_cmd;
+	int err;
+	struct cg2900_user_data *pf_data;
+
+	/*
+	 * Call function that returns the chip dependent enable HCI command.
+	 * If NULL is returned, then no bt_enable command should be sent to the
+	 * chip.
+	 */
+	enable_cmd = en_info->get_cmd(info, en_info->enable);
+	if (!enable_cmd) {
+		BT_DBG("%s New enable_state: %d", en_info->name,
+		       en_info->success);
+		info->enable_state = en_info->success;
+		return 0;
+	}
+
+	/* Set the HCI state before sending command to chip. */
+	BT_DBG("%s New enable_state: %d", en_info->name, en_info->awaiting_cc);
+	info->enable_state = en_info->awaiting_cc;
+
+	/* Send command to chip */
+	pf_data = dev_get_platdata(info->cmd);
+	err = pf_data->write(pf_data, enable_cmd);
+	if (err) {
+		BT_ERR("Couldn't send %s command (%d)", en_info->name, err);
+		kfree_skb(enable_cmd);
+		info->enable_state = en_info->failed;
+		return err;
+	}
+
+	/*
+	 * Wait for callback to receive command complete and then wake us up
+	 * again.
+	 */
+	wait_event_interruptible_timeout(hci_wait_queue,
+				info->enable_state == en_info->success,
+				msecs_to_jiffies(RESP_TIMEOUT));
+	/* Check the current state to see if it worked */
+	if (info->enable_state != en_info->success) {
+		BT_ERR("Could not change %s state (%d)",
+		       en_info->name, info->enable_state);
+		BT_DBG("%s New enable_state: %d", en_info->name,
+		       en_info->failed);
+		info->enable_state = en_info->failed;
+		return -EACCES;
+	}
+
+	return 0;
+}
+
+/**
  * btcg2900_open() - Open HCI interface.
  * @hdev:	HCI device being opened.
  *
@@ -408,8 +688,8 @@ static int btcg2900_open(struct hci_dev *hdev)
 {
 	struct btcg2900_info *info;
 	struct cg2900_user_data *pf_data;
-	struct sk_buff *enable_cmd;
 	int err;
+	struct enable_info en_info;
 
 	BT_INFO("Open ST-Ericsson CG2900 driver");
 
@@ -455,47 +735,44 @@ static int btcg2900_open(struct hci_dev *hdev)
 		info->reset_state = RESET_IDLE;
 	}
 
-	/*
-	 * Call function that returns the chip dependent vs_bt_enable(true)
-	 * HCI command.
-	 * If NULL is returned, then no bt_enable command should be sent to the
-	 * chip.
-	 */
-	enable_cmd = get_bt_enable_cmd(info, true);
-	if (!enable_cmd) {
-		/* The chip is enabled by default */
-		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
-		info->enable_state = ENABLE_BT_ENABLED;
-		return 0;
-	}
+	/* First enable the BT core */
+	en_info.enable = true;
+	en_info.get_cmd = get_bt_enable_cmd;
+	en_info.name = "VS BT Enable (true)";
+	en_info.success = ENABLE_BT_ENABLED;
+	en_info.awaiting_cc = ENABLE_WAITING_BT_ENABLED_CC;
+	en_info.failed = ENABLE_BT_DISABLED;
 
-	/* Set the HCI state before sending command to chip. */
-	BT_DBG("New enable_state: ENABLE_WAITING_BT_ENABLED_CC");
-	info->enable_state = ENABLE_WAITING_BT_ENABLED_CC;
-
-	/* Send command to chip */
-	pf_data = dev_get_platdata(info->cmd);
-	err = pf_data->write(pf_data, enable_cmd);
+	err = send_enable_cmd(info, &en_info);
 	if (err) {
-		BT_ERR("Couldn't send BtEnable command (%d)", err);
-		kfree_skb(enable_cmd);
+		BT_ERR("Couldn't enable BT core (%d)", err);
 		goto handle_error;
 	}
 
-	/*
-	 * Wait for callback to receive command complete and then wake us up
-	 * again.
-	 */
-	wait_event_interruptible_timeout(hci_wait_queue,
-				(info->enable_state == ENABLE_BT_ENABLED),
-				msecs_to_jiffies(RESP_TIMEOUT));
-	/* Check the current state to se that it worked. */
-	if (info->enable_state != ENABLE_BT_ENABLED) {
-		BT_ERR("Could not enable CG2900 BT core (%d)",
-		       info->enable_state);
-		err = -EACCES;
-		BT_DBG("New enable_state: ENABLE_BT_DISABLED");
-		info->enable_state = ENABLE_BT_DISABLED;
+	/* Now reset the BT/WLAN ePTA coex */
+	en_info.enable = false;
+	en_info.get_cmd = get_epta_mode_cmd;
+	en_info.name = "VS Write ePTA Mode (false)";
+	en_info.success = ENABLE_EPTA_RESET;
+	en_info.awaiting_cc = ENABLE_WAITING_EPTA_RESET_CC;
+	en_info.failed = ENABLE_EPTA_ENABLED;
+
+	err = send_enable_cmd(info, &en_info);
+	if (err) {
+		BT_ERR("Couldn't reset ePTA (%d)", err);
+		goto handle_error;
+	}
+
+	/* Now enable the BT/WLAN ePTA coex */
+	en_info.enable = true;
+	en_info.name = "VS Write ePTA Mode (true)";
+	en_info.success = ENABLE_EPTA_ENABLED;
+	en_info.awaiting_cc = ENABLE_WAITING_EPTA_ENABLED_CC;
+	en_info.failed = ENABLE_EPTA_RESET;
+
+	err = send_enable_cmd(info, &en_info);
+	if (err) {
+		BT_ERR("Couldn't enable ePTA (%d)", err);
 		goto handle_error;
 	}
 
@@ -524,9 +801,8 @@ handle_error:
 static int btcg2900_close(struct hci_dev *hdev)
 {
 	struct btcg2900_info *info = NULL;
-	struct sk_buff *enable_cmd;
-	struct cg2900_user_data *pf_data;
 	int err;
+	struct enable_info en_info;
 
 	BT_DBG("btcg2900_close");
 
@@ -550,48 +826,17 @@ static int btcg2900_close(struct hci_dev *hdev)
 	if (info->reset_state == RESET_ACTIVATED)
 		goto remove_users;
 
-	/*
-	 * Get the chip dependent BT Enable HCI command. The command parameter
-	 * shall be set to false to disable the BT core.
-	 * If NULL is returned, then no BT Enable command should be sent to the
-	 * chip.
-	 */
-	enable_cmd = get_bt_enable_cmd(info, false);
-	if (!enable_cmd) {
-		/*
-		 * The chip is enabled by default and we should not disable it.
-		 */
-		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
-		info->enable_state = ENABLE_BT_ENABLED;
-		goto remove_users;
-	}
+	/* Now disable the BT core */
+	en_info.enable = false;
+	en_info.get_cmd = get_bt_enable_cmd;
+	en_info.name = "VS BT Enable (false)";
+	en_info.success = ENABLE_BT_DISABLED;
+	en_info.awaiting_cc = ENABLE_WAITING_BT_DISABLED_CC;
+	en_info.failed = ENABLE_BT_ENABLED;
 
-	/* Set the HCI state before sending command to chip */
-	BT_DBG("New enable_state: ENABLE_WAITING_BT_DISABLED_CC");
-	info->enable_state = ENABLE_WAITING_BT_DISABLED_CC;
-
-	/* Send command to chip */
-	pf_data = dev_get_platdata(info->cmd);
-	err = pf_data->write(pf_data, enable_cmd);
-	if (err) {
-		BT_ERR("Couldn't send BtEnable command (%d)", err);
-		kfree_skb(enable_cmd);
-		goto remove_users;
-	}
-
-	/*
-	 * Wait for callback to receive command complete and then wake us up
-	 * again.
-	 */
-	wait_event_interruptible_timeout(hci_wait_queue,
-				(info->enable_state == ENABLE_BT_DISABLED),
-				msecs_to_jiffies(RESP_TIMEOUT));
-	/* Check the current state to se that it worked. */
-	if (info->enable_state != ENABLE_BT_DISABLED) {
-		BT_ERR("Could not disable CG2900 BT core");
-		BT_DBG("New enable_state: ENABLE_BT_ENABLED");
-		info->enable_state = ENABLE_BT_ENABLED;
-	}
+	err = send_enable_cmd(info, &en_info);
+	if (err)
+		BT_ERR("Couldn't disable BT core (%d)", err);
 
 remove_users:
 	/* Finally deregister all users and free allocated data */
