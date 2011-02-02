@@ -395,7 +395,7 @@ static bool handle_bt_enable_comp(struct btcg2900_info *info, u8 status)
 
 finished:
 	/* Wake up whoever is waiting for this result. */
-	wake_up_interruptible_all(&hci_wait_queue);
+	wake_up_all(&hci_wait_queue);
 	return true;
 }
 
@@ -461,7 +461,7 @@ static bool handle_epta_mode_comp(struct btcg2900_info *info, u8 status)
 
 finished:
 	/* Wake up whoever is waiting for this result. */
-	wake_up_interruptible_all(&hci_wait_queue);
+	wake_up_all(&hci_wait_queue);
 	return true;
 }
 
@@ -590,7 +590,7 @@ static void hci_reset_cb(struct cg2900_user_data *dev)
 		 * anyway even though this will cost some memory.
 		 */
 
-	wait_event_interruptible_timeout(hci_wait_queue,
+	wait_event_timeout(hci_wait_queue,
 			(RESET_UNREGISTERED == info->reset_state),
 			msecs_to_jiffies(RESP_TIMEOUT));
 	if (RESET_UNREGISTERED != info->reset_state)
@@ -655,7 +655,7 @@ static int send_enable_cmd(struct btcg2900_info *info,
 	 * Wait for callback to receive command complete and then wake us up
 	 * again.
 	 */
-	wait_event_interruptible_timeout(hci_wait_queue,
+	wait_event_timeout(hci_wait_queue,
 				info->enable_state == en_info->success,
 				msecs_to_jiffies(RESP_TIMEOUT));
 	/* Check the current state to see if it worked */
@@ -939,7 +939,7 @@ static void btcg2900_destruct(struct hci_dev *hdev)
 		}
 		BT_DBG("New reset_state: RESET_UNREGISTERED");
 		info->reset_state = RESET_UNREGISTERED;
-		wake_up_interruptible(&hci_wait_queue);
+		wake_up_all(&hci_wait_queue);
 	}
 }
 

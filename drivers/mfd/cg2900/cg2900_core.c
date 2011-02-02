@@ -217,7 +217,7 @@ handle_read_local_version_info_cmd_complete_evt(struct cg2900_chip_dev *dev,
 			"with status 0x%X\n", evt->status);
 		dev_dbg(dev->dev, "New boot_state: BOOT_FAILED\n");
 		info->boot_state = BOOT_FAILED;
-		wake_up_interruptible_all(&main_info->wq);
+		wake_up_all(&main_info->wq);
 		return true;
 	}
 
@@ -239,7 +239,7 @@ handle_read_local_version_info_cmd_complete_evt(struct cg2900_chip_dev *dev,
 
 	dev_dbg(dev->dev, "New boot_state: BOOT_READY\n");
 	info->boot_state = BOOT_READY;
-	wake_up_interruptible_all(&main_info->wq);
+	wake_up_all(&main_info->wq);
 
 	return true;
 }
@@ -355,7 +355,7 @@ static void work_hw_registered(struct work_struct *work)
 		dev->t_cb.set_chip_power(dev, true);
 
 	/* Wait 100ms before continuing to be sure that the chip is ready */
-	schedule_timeout_interruptible(msecs_to_jiffies(CHIP_READY_TIMEOUT));
+	schedule_timeout_killable(msecs_to_jiffies(CHIP_READY_TIMEOUT));
 
 	/* Set our function to receive data from chip */
 	dev->c_cb.data_from_chip = cg2900_data_from_chip;
@@ -372,10 +372,10 @@ static void work_hw_registered(struct work_struct *work)
 
 	dev_dbg(dev->dev,
 		"Wait up to 500 milliseconds for revision to be read\n");
-	wait_event_interruptible_timeout(main_info->wq,
-		(BOOT_READY == info->boot_state ||
-		 BOOT_FAILED == info->boot_state),
-		msecs_to_jiffies(REVISION_READOUT_TIMEOUT));
+	wait_event_timeout(main_info->wq,
+			   (BOOT_READY == info->boot_state ||
+			    BOOT_FAILED == info->boot_state),
+			    msecs_to_jiffies(REVISION_READOUT_TIMEOUT));
 
 	if (BOOT_READY != info->boot_state) {
 		dev_err(dev->dev,

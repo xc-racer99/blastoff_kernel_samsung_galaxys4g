@@ -93,7 +93,7 @@ static void dcg2900_enable_chip(struct cg2900_chip_dev *dev)
 	 */
 	gpio_set_value(info->gbf_gpio, 1);
 
-	schedule_timeout_interruptible(
+	schedule_timeout_uninterruptible(
 			msecs_to_jiffies(CHIP_INITIAL_HIGH_TIMEOUT));
 
 	spin_lock_irqsave(&info->pdb_toggle_lock, flags);

@@ -1106,7 +1106,7 @@ static void work_power_off_chip(struct work_struct *work)
 	 * Mandatory to wait 500ms after the power_switch_off command has been
 	 * transmitted, in order to make sure that the controller is ready.
 	 */
-	schedule_timeout_interruptible(msecs_to_jiffies(POWER_SW_OFF_WAIT));
+	schedule_timeout_killable(msecs_to_jiffies(POWER_SW_OFF_WAIT));
 
 shut_down_chip:
 	dev_dbg(dev->dev, "New closing_state: CLOSING_SHUT_DOWN\n");
@@ -1119,7 +1119,7 @@ shut_down_chip:
 	/* Chip shut-down finished, set correct state and wake up the chip. */
 	dev_dbg(dev->dev, "New main_state: CG2900_IDLE\n");
 	info->main_state = CG2900_IDLE;
-	wake_up_interruptible_all(&main_wait_queue);
+	wake_up_all(&main_wait_queue);
 
 	kfree(my_work);
 }
@@ -2150,14 +2150,14 @@ static void chip_shutdown(struct cg2900_user_data *user)
 	 * Wait 50ms before continuing to be sure that the chip detects
 	 * chip power off.
 	 */
-	schedule_timeout_interruptible(
+	schedule_timeout_killable(
 			msecs_to_jiffies(LINE_TOGGLE_DETECT_TIMEOUT));
 
 	if (dev->t_cb.set_chip_power)
 		dev->t_cb.set_chip_power(dev, true);
 
 	/* Wait 100ms before continuing to be sure that the chip is ready */
-	schedule_timeout_interruptible(msecs_to_jiffies(CHIP_READY_TIMEOUT));
+	schedule_timeout_killable(msecs_to_jiffies(CHIP_READY_TIMEOUT));
 
 	if (user != info->bt_audio && user != info->fm_audio)
 		info->last_user = user;
@@ -2196,7 +2196,7 @@ static void chip_startup_finished(struct cg2900_chip_info *info, int err)
 		info->main_state = CG2900_ACTIVE;
 	}
 
-	wake_up_interruptible_all(&main_wait_queue);
+	wake_up_all(&main_wait_queue);
 
 	if (err)
 		return;
@@ -2255,7 +2255,7 @@ static int cg2900_open(struct cg2900_user_data *user)
 	 * Note there will of course be no wait if we are already in the right
 	 * state.
 	 */
-	err = wait_event_interruptible_timeout(main_wait_queue,
+	err = wait_event_timeout(main_wait_queue,
 			(CG2900_IDLE == info->main_state ||
 			 CG2900_ACTIVE == info->main_state),
 			msecs_to_jiffies(LINE_TOGGLE_DETECT_TIMEOUT));
@@ -2297,7 +2297,7 @@ static int cg2900_open(struct cg2900_user_data *user)
 			dev->t_cb.set_chip_power(dev, true);
 
 		/* Wait to be sure that the chip is ready */
-		schedule_timeout_interruptible(
+		schedule_timeout_killable(
 				msecs_to_jiffies(CHIP_READY_TIMEOUT));
 
 		if (dev->t_cb.open) {
@@ -2321,7 +2321,7 @@ static int cg2900_open(struct cg2900_user_data *user)
 					dev);
 
 		dev_dbg(user->dev, "Wait up to 15 seconds for chip to start\n");
-		wait_event_interruptible_timeout(main_wait_queue,
+		wait_event_timeout(main_wait_queue,
 			(CG2900_ACTIVE == info->main_state ||
 			 CG2900_IDLE   == info->main_state),
 			msecs_to_jiffies(CHIP_STARTUP_TIMEOUT));
@@ -2542,7 +2542,7 @@ static void cg2900_close(struct cg2900_user_data *user)
 	chip_shutdown(user);
 
 	dev_dbg(user->dev, "Wait up to 15 seconds for chip to shut-down\n");
-	wait_event_interruptible_timeout(main_wait_queue,
+	wait_event_timeout(main_wait_queue,
 				(CG2900_IDLE == info->main_state),
 				msecs_to_jiffies(CHIP_SHUTDOWN_TIMEOUT));
 
@@ -2724,7 +2724,7 @@ static int cg2900_reset(struct cg2900_user_data *user)
 	 * Send wake-up since this might have been called from a failed boot.
 	 * No harm done if it is a CG2900 chip user who called.
 	 */
-	wake_up_interruptible_all(&main_wait_queue);
+	wake_up_all(&main_wait_queue);
 
 	return 0;
 }

@@ -856,7 +856,7 @@ static void chip_shutdown(struct cg2900_user_data *user)
 	/* Chip shut-down finished, set correct state and wake up the chip. */
 	dev_dbg(dev->dev, "New main_state: STLC2690_IDLE\n");
 	info->main_state = STLC2690_IDLE;
-	wake_up_interruptible_all(&main_wait_queue);
+	wake_up_all(&main_wait_queue);
 }
 
 static void chip_startup_finished(struct stlc2690_chip_info *info, int err)
@@ -871,7 +871,7 @@ static void chip_startup_finished(struct stlc2690_chip_info *info, int err)
 		info->main_state = STLC2690_ACTIVE;
 	}
 
-	wake_up_interruptible_all(&main_wait_queue);
+	wake_up_all(&main_wait_queue);
 
 	if (err)
 		return;
@@ -906,10 +906,10 @@ static int stlc2690_open(struct cg2900_user_data *user)
 	mutex_lock(&main_info->man_mutex);
 
 	/* Add a minor wait in order to avoid CPU blocking, looping openings */
-	err = wait_event_interruptible_timeout(main_wait_queue,
-			(STLC2690_IDLE == info->main_state ||
-			 STLC2690_ACTIVE == info->main_state),
-			msecs_to_jiffies(LINE_TOGGLE_DETECT_TIMEOUT));
+	err = wait_event_timeout(main_wait_queue,
+				 (STLC2690_IDLE == info->main_state ||
+				  STLC2690_ACTIVE == info->main_state),
+				 msecs_to_jiffies(LINE_TOGGLE_DETECT_TIMEOUT));
 	if (err <= 0) {
 		if (STLC2690_INIT == info->main_state)
 			dev_err(user->dev, "Transport not opened\n");
@@ -947,7 +947,7 @@ static int stlc2690_open(struct cg2900_user_data *user)
 			dev->t_cb.set_chip_power(dev, true);
 
 		/* Wait to be sure that the chip is ready */
-		schedule_timeout_interruptible(
+		schedule_timeout_killable(
 				msecs_to_jiffies(CHIP_READY_TIMEOUT));
 
 		if (dev->t_cb.open)
@@ -970,10 +970,10 @@ static int stlc2690_open(struct cg2900_user_data *user)
 		cg2900_send_bt_cmd(user, info->logger, &cmd, sizeof(cmd));
 
 		dev_dbg(user->dev, "Wait up to 15 seconds for chip to start\n");
-		wait_event_interruptible_timeout(main_wait_queue,
-			(STLC2690_ACTIVE == info->main_state ||
-			 STLC2690_IDLE   == info->main_state),
-			msecs_to_jiffies(CHIP_STARTUP_TIMEOUT));
+		wait_event_timeout(main_wait_queue,
+				   (STLC2690_ACTIVE == info->main_state ||
+				    STLC2690_IDLE   == info->main_state),
+				   msecs_to_jiffies(CHIP_STARTUP_TIMEOUT));
 		if (STLC2690_ACTIVE != info->main_state) {
 			dev_err(user->dev, "STLC2690 driver failed to start\n");
 
@@ -1082,9 +1082,9 @@ static void stlc2690_close(struct cg2900_user_data *user)
 	chip_shutdown(user);
 
 	dev_dbg(user->dev, "Wait up to 15 seconds for chip to shut-down\n");
-	wait_event_interruptible_timeout(main_wait_queue,
-				(STLC2690_IDLE == info->main_state),
-				msecs_to_jiffies(CHIP_SHUTDOWN_TIMEOUT));
+	wait_event_timeout(main_wait_queue,
+			   STLC2690_IDLE == info->main_state,
+			   msecs_to_jiffies(CHIP_SHUTDOWN_TIMEOUT));
 
 	/* Force shutdown if we timed out */
 	if (STLC2690_IDLE != info->main_state) {
@@ -1175,7 +1175,7 @@ static int stlc2690_reset(struct cg2900_user_data *user)
 	 * Send wake-up since this might have been called from a failed boot.
 	 * No harm done if it is a STLC2690 chip user who called.
 	 */
-	wake_up_interruptible_all(&main_wait_queue);
+	wake_up_all(&main_wait_queue);
 
 	return 0;
 }

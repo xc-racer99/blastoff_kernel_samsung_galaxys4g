@@ -55,6 +55,7 @@
 #define UART_TX_TIMEOUT		100
 #define UART_RX_TIMEOUT		20
 #define UART_RESP_TIMEOUT	1000
+#define UART_RESUME_TIMEOUT	20
 
 /* Number of bytes to reserve at start of sk_buffer when receiving packet */
 #define RX_SKB_RESERVE		8
@@ -269,11 +270,11 @@ struct uart_delayed_work_struct{
  * @baud_rate_state:	UART baud rate change state.
  * @baud_rate:		Current baud rate setting.
  * @sleep_state:	UART sleep state.
- * @sleep_work:		Delayed sleep work struct.
- * @wakeup_work:		Wake-up work struct.
+ * @sleep_work:	Delayed sleep work struct.
+ * @wakeup_work:	Wake-up work struct.
  * @sleep_state_lock:	Used to protect chip state.
  * @sleep_allowed:	Indicate if tty has functions needed for sleep mode.
- * @transfer_counter:		Variable to keep track of ongoing transfers.
+ * @transfer_counter:	Variable to keep track of ongoing transfers.
  * @regulator:		Regulator.
  * @regulator_enabled:	True if regulator is enabled.
  * @dev:		Pointer to CG2900 uart device.
@@ -293,11 +294,11 @@ struct uart_info {
 	enum baud_rate_change_state	baud_rate_state;
 	int				baud_rate;
 	enum sleep_state		sleep_state;
-	struct uart_delayed_work_struct		sleep_work;
+	struct uart_delayed_work_struct	sleep_work;
 	struct uart_work_struct		wakeup_work;
 	struct mutex			sleep_state_lock;
 	bool				sleep_allowed;
-	atomic_t		transfer_counter;
+	atomic_t			transfer_counter;
 	struct	regulator		*regulator;
 	bool				regulator_enabled;
 	struct device			*dev;
@@ -573,10 +574,22 @@ static void wake_up_chip(struct uart_info *uart_info)
 
 	if (CHIP_ASLEEP == uart_info->sleep_state ||
 		CHIP_RESUMING == uart_info->sleep_state) {
+		/* Wait before disabling IRQ */
+		schedule_timeout_killable(
+				msecs_to_jiffies(UART_RESUME_TIMEOUT));
+
 		/* Disable IRQ only when it was enabled. */
 		unset_cts_irq(uart_info);
 		(void)hci_uart_set_baudrate(uart_info->hu,
 							uart_info->baud_rate);
+
+		/*
+		 * Wait before flowing on. Otherwise UART might not be ready in
+		 * time
+		 */
+		schedule_timeout_killable(
+				msecs_to_jiffies(UART_RESUME_TIMEOUT));
+
 		/* Set FLOW on. */
 		hci_uart_flow_ctrl(uart_info->hu, FLOW_ON);
 	}
@@ -905,7 +918,7 @@ static void finish_setting_baud_rate(struct hci_uart *hu)
 	 * Give the tty driver time to send data and proceed. If it hasn't
 	 * been sent we can't do much about it anyway.
 	 */
-	schedule_timeout_interruptible(msecs_to_jiffies(UART_TX_TIMEOUT));
+	schedule_timeout_killable(msecs_to_jiffies(UART_TX_TIMEOUT));
 
 	/*
 	 * Now set the termios struct to the new baudrate. Start by storing
@@ -1089,7 +1102,7 @@ static int set_baud_rate(struct hci_uart *hu, int baud)
 	 * Wait some time to be sure that any RX process has finished (which
 	 * flows on RTS in the end) before flowing off the RTS.
 	 */
-	schedule_timeout_interruptible(msecs_to_jiffies(UART_RX_TIMEOUT));
+	schedule_timeout_killable(msecs_to_jiffies(UART_RX_TIMEOUT));
 	hci_uart_flow_ctrl(uart_info->hu, FLOW_OFF);
 
 	/*
@@ -1130,7 +1143,7 @@ static int set_baud_rate(struct hci_uart *hu, int baud)
 	 * Now wait for the command complete.
 	 * It will come at the new baudrate.
 	 */
-	wait_event_interruptible_timeout(uart_wait_queue,
+	wait_event_timeout(uart_wait_queue,
 				((BAUD_SUCCESS == uart_info->baud_rate_state) ||
 				 (BAUD_FAIL    == uart_info->baud_rate_state)),
 				 msecs_to_jiffies(UART_RESP_TIMEOUT));
@@ -1238,7 +1251,7 @@ static int uart_open(struct cg2900_chip_dev *dev)
 	 * Wait for command complete. If error, exit without changing
 	 * baud rate.
 	 */
-	wait_event_interruptible_timeout(uart_wait_queue,
+	wait_event_timeout(uart_wait_queue,
 					BAUD_IDLE == uart_info->baud_rate_state,
 					msecs_to_jiffies(UART_RESP_TIMEOUT));
 	if (BAUD_IDLE != uart_info->baud_rate_state) {
@@ -1421,7 +1434,7 @@ static void send_skb_to_core(struct uart_info *uart_info, struct sk_buff *skb)
 			dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_FAIL\n");
 			uart_info->baud_rate_state = BAUD_FAIL;
 		}
-		wake_up_interruptible(&uart_wait_queue);
+		wake_up_all(&uart_wait_queue);
 		kfree_skb(skb);
 	} else if (BAUD_SENDING_RESET == uart_info->baud_rate_state) {
 		/*
@@ -1462,7 +1475,7 @@ static void send_skb_to_core(struct uart_info *uart_info, struct sk_buff *skb)
 			dev_dbg(MAIN_DEV, "New baud_rate_state: BAUD_FAIL\n");
 			uart_info->baud_rate_state = BAUD_FAIL;
 		}
-		wake_up_interruptible(&uart_wait_queue);
+		wake_up_all(&uart_wait_queue);
 		kfree_skb(skb);
 	} else {
 		/* Just pass data to CG2900 Core */

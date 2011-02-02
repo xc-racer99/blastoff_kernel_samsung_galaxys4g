@@ -476,7 +476,7 @@ static void read_cb(struct cg2900_user_data *dev, struct sk_buff *skb)
 	dev_dbg(dev->dev, "New resp_state: RESP_RECEIVED");
 	cb_info->user->resp_state = RESP_RECEIVED;
 	skb_queue_tail(&cb_info->skb_queue, skb);
-	wake_up_interruptible(&cb_info->wq);
+	wake_up_all(&cb_info->wq);
 }
 
 /**
@@ -691,9 +691,9 @@ static int receive_fm_write_response(struct audio_user *audio_user,
 	 * Wait for callback to receive command complete and then wake us up
 	 * again.
 	 */
-	res = wait_event_interruptible_timeout(cb_info->wq,
-				audio_user->resp_state == RESP_RECEIVED,
-				msecs_to_jiffies(RESP_TIMEOUT));
+	res = wait_event_timeout(cb_info->wq,
+				 audio_user->resp_state == RESP_RECEIVED,
+				 msecs_to_jiffies(RESP_TIMEOUT));
 	if (!res) {
 		dev_err(FM_DEV, "Timeout while waiting for return packet\n");
 		return -ECOMM;
@@ -785,9 +785,9 @@ static int receive_bt_cmd_complete(struct audio_user *audio_user, u16 rsp,
 	 * Wait for callback to receive command complete and then wake us up
 	 * again.
 	 */
-	res = wait_event_interruptible_timeout(cb_info->wq,
-					audio_user->resp_state == RESP_RECEIVED,
-					msecs_to_jiffies(RESP_TIMEOUT));
+	res = wait_event_timeout(cb_info->wq,
+				 audio_user->resp_state == RESP_RECEIVED,
+				 msecs_to_jiffies(RESP_TIMEOUT));
 	if (!res) {
 		dev_err(BT_DEV, "Timeout while waiting for return packet\n");
 		return -ECOMM;
@@ -3290,7 +3290,7 @@ static int common_remove(struct audio_info *info, struct device *dev)
 	pf_data = dev_get_platdata(dev);
 	cb_info = cg2900_get_usr(pf_data);
 	skb_queue_purge(&cb_info->skb_queue);
-	wake_up_interruptible_all(&cb_info->wq);
+	wake_up_all(&cb_info->wq);
 	kfree(cb_info);
 
 	if (!info->misc_registered)
