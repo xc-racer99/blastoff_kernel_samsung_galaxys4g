@@ -134,7 +134,7 @@ void send_bt_cmd(struct cg2900_chip_dev *dev, void *data, int length)
 	struct sk_buff *skb;
 	int err;
 
-	skb = alloc_skb(length + HCI_H4_SIZE, GFP_KERNEL);
+	skb = alloc_skb(length + HCI_H4_SIZE, GFP_ATOMIC);
 	if (!skb) {
 		dev_err(dev->dev, "send_bt_cmd: Couldn't alloc sk_buff with "
 			"length %d\n", length);

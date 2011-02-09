@@ -94,7 +94,7 @@ void cg2900_send_bt_cmd(struct cg2900_user_data *user,
 {
 	struct sk_buff *skb;
 
-	skb = user->alloc_skb(length, GFP_KERNEL);
+	skb = user->alloc_skb(length, GFP_ATOMIC);
 	if (!skb) {
 		dev_err(user->dev, "cg2900_send_bt_cmd: Couldn't alloc "
 			"sk_buff with length %d\n", length);
