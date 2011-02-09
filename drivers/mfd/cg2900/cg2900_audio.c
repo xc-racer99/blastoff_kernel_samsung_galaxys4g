@@ -145,7 +145,7 @@ struct audio_info {
 	bool				i2s_config_known;
 	bool				i2s_pcm_config_known;
 	struct endpoint_list		endpoints;
-	u32				stream_ids;
+	u8				stream_ids[16];
 };
 
 /**
@@ -627,7 +627,7 @@ static s8 new_stream_id(struct audio_info *info)
 
 	mutex_lock(&info->management_mutex);
 
-	r = find_first_zero_bit(&info->stream_ids,
+	r = find_first_zero_bit(info->stream_ids,
 				8 * sizeof(info->stream_ids));
 
 	if (r >= 8 * sizeof(info->stream_ids)) {
@@ -635,7 +635,7 @@ static s8 new_stream_id(struct audio_info *info)
 		goto out;
 	}
 
-	info->stream_ids |= (0x01u << r);
+	set_bit(r, (unsigned long int *)info->stream_ids);
 
 out:
 	mutex_unlock(&info->management_mutex);
@@ -653,7 +653,7 @@ static void release_stream_id(struct audio_info *info, u8 id)
 		return;
 
 	mutex_lock(&info->management_mutex);
-	info->stream_ids &= ~(0x01u << id);
+	clear_bit(id, (unsigned long int *)info->stream_ids);
 	mutex_unlock(&info->management_mutex);
 }
 
@@ -828,7 +828,10 @@ static int receive_bt_cmd_complete(struct audio_user *audio_user, u16 rsp,
 		dev_err(BT_DEV, "Received command complete with err %d\n",
 			evt->status);
 		err = -EIO;
-		goto error_handling_free_skb;
+		/*
+		* In data there might be more detailed error code.
+		* Let's copy it.
+		*/
 	}
 
 	/*
@@ -839,6 +842,109 @@ static int receive_bt_cmd_complete(struct audio_user *audio_user, u16 rsp,
 		memcpy(data, evt->data, data_len);
 
 	/* Operation succeeded. We are now done */
+
+error_handling_free_skb:
+	kfree_skb(skb);
+	return err;
+}
+
+/**
+ * send_vs_delete_stream() - Delete an audio stream defined by @stream_handle.
+ * @audio_user:		Audio user to check for.
+ * @stream_handle:	Handle of the audio stream.
+ *
+ * This function is used to delete an audio stream defined by a stream
+ * handle.
+ *
+ * Returns:
+ *   0 if there is no error.
+ *   -ECOMM if no response was received.
+ *   -ENOMEM upon allocation errors.
+ *   Errors from @cg2900_write.
+ *   -EIO for other errors.
+ */
+static int send_vs_delete_stream(struct audio_user *audio_user,
+			    unsigned int stream_handle)
+{
+	int err = 0;
+	struct sk_buff *skb;
+	u16 opcode;
+	struct audio_info *info = audio_user->info;
+	struct cg2900_user_data *pf_data = dev_get_platdata(info->dev_bt);
+	struct audio_cb_info *cb_info = cg2900_get_usr(pf_data);
+
+	/* Now delete the stream - format command... */
+	if (info->revision == CHIP_REV_PG1) {
+		struct bt_vs_reset_session_cfg_cmd *cmd;
+
+		dev_dbg(BT_DEV, "BT: HCI_VS_Reset_Session_Configuration\n");
+
+		skb = pf_data->alloc_skb(sizeof(*cmd), GFP_KERNEL);
+		if (!skb) {
+			dev_err(BT_DEV, "Could not allocate skb\n");
+			err = -ENOMEM;
+			return err;
+		}
+
+		cmd = (struct bt_vs_reset_session_cfg_cmd *)
+			skb_put(skb, sizeof(*cmd));
+
+		opcode = CG2900_BT_VS_RESET_SESSION_CONFIG;
+		cmd->opcode = cpu_to_le16(opcode);
+		cmd->plen   = BT_PARAM_LEN(sizeof(*cmd));
+		cmd->id     = (u8)stream_handle;
+	} else {
+		struct mc_vs_delete_stream_cmd *cmd;
+
+		dev_dbg(BT_DEV, "BT: HCI_VS_Delete_Stream\n");
+
+		skb = pf_data->alloc_skb(sizeof(*cmd), GFP_KERNEL);
+		if (!skb) {
+			dev_err(BT_DEV, "Could not allocate skb\n");
+			err = -ENOMEM;
+			return err;
+		}
+
+		cmd = (struct mc_vs_delete_stream_cmd *)
+			skb_put(skb, sizeof(*cmd));
+
+		opcode = CG2900_MC_VS_DELETE_STREAM;
+		cmd->opcode = cpu_to_le16(opcode);
+		cmd->plen   = BT_PARAM_LEN(sizeof(*cmd));
+		cmd->stream = (u8)stream_handle;
+	}
+
+	/* ...and send it */
+	cb_info->user = audio_user;
+	dev_dbg(BT_DEV, "New resp_state: WAITING\n");
+	audio_user->resp_state = WAITING;
+
+	err = pf_data->write(pf_data, skb);
+	if (err) {
+		dev_err(BT_DEV, "Error %d occurred while transmitting skb\n",
+			err);
+		goto error_handling_free_skb;
+	}
+
+	/* wait for response */
+	if (info->revision == CHIP_REV_PG1) {
+		err = receive_bt_cmd_complete(audio_user, opcode, NULL, 0);
+	} else {
+		u8 vs_err;
+
+		/* All commands in PG2 API returns one byte extra status */
+		err = receive_bt_cmd_complete(audio_user, opcode,
+					      &vs_err, sizeof(vs_err));
+
+	if (err)
+		dev_err(BT_DEV,
+			"VS_DELETE_STREAM - failed with error 0x%02X\n",
+			vs_err);
+		else
+			release_stream_id(info, stream_handle);
+	}
+
+	return err;
 
 error_handling_free_skb:
 	kfree_skb(skb);
@@ -1762,6 +1868,11 @@ static int conn_start_i2s_to_fm_rx(struct audio_user *audio_user,
 	else
 		err = send_vs_stream_ctrl(audio_user, *stream_handle,
 					  CG2900_MC_STREAM_START);
+	/*Let's delete a stream.*/
+	if (err < 0) {
+		dev_dbg(BT_DEV, "Could not start a stream.");
+		(void)send_vs_delete_stream(audio_user, *stream_handle);
+	}
 
 finished_unlock_mutex:
 	dev_dbg(FM_DEV, "New resp_state: IDLE\n");
@@ -1890,6 +2001,11 @@ static int conn_start_i2s_to_fm_tx(struct audio_user *audio_user,
 	else
 		err = send_vs_stream_ctrl(audio_user, *stream_handle,
 					  CG2900_MC_STREAM_START);
+	/* Let's delete and release stream.*/
+	if (err < 0) {
+		dev_dbg(BT_DEV, "Could not start a stream.");
+		(void)send_vs_delete_stream(audio_user, *stream_handle);
+	}
 
 finished_unlock_mutex:
 	dev_dbg(FM_DEV, "New resp_state: IDLE\n");
@@ -2028,6 +2144,11 @@ static int conn_start_pcm_to_sco(struct audio_user *audio_user,
 	else
 		err = send_vs_stream_ctrl(audio_user, *stream_handle,
 					  CG2900_MC_STREAM_START);
+	/* Let's delete and release stream.*/
+	if (err < 0) {
+		dev_dbg(BT_DEV, "Could not start a stream.");
+		(void)send_vs_delete_stream(audio_user, *stream_handle);
+	}
 
 finished_unlock_mutex:
 	dev_dbg(BT_DEV, "New resp_state: IDLE\n");
@@ -2056,11 +2177,7 @@ static int conn_stop_stream(struct audio_user *audio_user,
 			    unsigned int stream_handle)
 {
 	int err = 0;
-	struct sk_buff *skb;
-	u16 opcode;
 	struct audio_info *info = audio_user->info;
-	struct cg2900_user_data *pf_data = dev_get_platdata(info->dev_bt);
-	struct audio_cb_info *cb_info = cg2900_get_usr(pf_data);
 
 	dev_dbg(BT_DEV, "conn_stop_stream handle %d\n", stream_handle);
 
@@ -2080,82 +2197,8 @@ static int conn_stop_stream(struct audio_user *audio_user,
 	if (err)
 		goto finished_unlock_mutex;
 
-	/* Now delete the stream - format command... */
-	if (info->revision == CHIP_REV_PG1) {
-		struct bt_vs_reset_session_cfg_cmd *cmd;
+	err = send_vs_delete_stream(audio_user, stream_handle);
 
-		dev_dbg(BT_DEV, "BT: HCI_VS_Reset_Session_Configuration\n");
-
-		skb = pf_data->alloc_skb(sizeof(*cmd), GFP_KERNEL);
-		if (!skb) {
-			dev_err(BT_DEV, "Could not allocate skb\n");
-			err = -ENOMEM;
-			goto finished_unlock_mutex;
-		}
-
-		cmd = (struct bt_vs_reset_session_cfg_cmd *)
-			skb_put(skb, sizeof(*cmd));
-
-		opcode = CG2900_BT_VS_RESET_SESSION_CONFIG;
-		cmd->opcode = cpu_to_le16(opcode);
-		cmd->plen   = BT_PARAM_LEN(sizeof(*cmd));
-		cmd->id     = (u8)stream_handle;
-	} else {
-		struct mc_vs_delete_stream_cmd *cmd;
-
-		dev_dbg(BT_DEV, "BT: HCI_VS_Delete_Stream\n");
-
-		skb = pf_data->alloc_skb(sizeof(*cmd), GFP_KERNEL);
-		if (!skb) {
-			dev_err(BT_DEV, "Could not allocate skb\n");
-			err = -ENOMEM;
-			goto finished_unlock_mutex;
-		}
-
-		cmd = (struct mc_vs_delete_stream_cmd *)
-			skb_put(skb, sizeof(*cmd));
-
-		opcode = CG2900_MC_VS_DELETE_STREAM;
-		cmd->opcode = cpu_to_le16(opcode);
-		cmd->plen   = BT_PARAM_LEN(sizeof(*cmd));
-		cmd->stream = (u8)stream_handle;
-	}
-
-	/* ...and send it */
-	cb_info->user = audio_user;
-	dev_dbg(BT_DEV, "New resp_state: WAITING\n");
-	audio_user->resp_state = WAITING;
-
-	err = pf_data->write(pf_data, skb);
-	if (err) {
-		dev_err(BT_DEV, "Error %d occurred while transmitting skb\n",
-			err);
-		goto error_handling_free_skb;
-	}
-
-	/* wait for response */
-	if (info->revision == CHIP_REV_PG1) {
-		err = receive_bt_cmd_complete(audio_user, opcode, NULL, 0);
-	} else {
-		u8 vs_err;
-
-		/* All commands in PG2 API returns one byte extra status */
-		err = receive_bt_cmd_complete(audio_user, opcode,
-					      &vs_err, sizeof(vs_err));
-
-		if (err)
-			dev_err(BT_DEV,
-				"VS_DELETE_STREAM - failed with error 0x%02X\n",
-				vs_err);
-		else
-			release_stream_id(info, stream_handle);
-
-	}
-
-	goto finished_unlock_mutex;
-
-error_handling_free_skb:
-	kfree_skb(skb);
 finished_unlock_mutex:
 	dev_dbg(BT_DEV, "New resp_state: IDLE\n");
 	audio_user->resp_state = IDLE;
@@ -2570,7 +2613,7 @@ int cg2900_audio_config_endpoint(unsigned int session,
 	struct audio_user *audio_user;
 	struct audio_info *info;
 
-	dev_dbg(BT_DEV, "cg2900_audio_config_endpoint\n");
+	pr_debug("cg2900_audio_config_endpoint\n");
 
 	if (!config) {
 		pr_err("NULL supplied as configuration structure");
@@ -3074,7 +3117,7 @@ static ssize_t audio_dev_write(struct file *filp, const char __user *buf,
 			memcpy(skb_put(skb, sizeof(op_code)), &op_code,
 			       sizeof(op_code));
 			memcpy(skb_put(skb, sizeof(stream_handle)),
-			       &dai_config, sizeof(stream_handle));
+			       &stream_handle, sizeof(stream_handle));
 			skb_queue_tail(&dev->rx_queue, skb);
 
 			dev_dbg(BT_DEV, "stream_handle %d\n", stream_handle);
