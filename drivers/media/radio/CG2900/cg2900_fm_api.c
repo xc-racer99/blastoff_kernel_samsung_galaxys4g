@@ -1861,7 +1861,7 @@ int cg2900_fm_tx_set_program_station_name(
 		goto error;
 	}
 	if (len < (MAX_PSN_SIZE - 1)) {
-		int count = len - 1;
+		int count = len;
 		while (count < (MAX_PSN_SIZE - 1))
 			psn[count++] = ' ';
 	}
