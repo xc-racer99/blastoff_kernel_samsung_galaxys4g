@@ -897,6 +897,22 @@ static void update_flow_ctrl_fm(struct cg2900_chip_dev *dev,
 }
 
 /**
+ * send_bt_enable() - Send HCI VS BT Enable command to the chip.
+ * @info:	Chip info structure.
+ * @bt_enable:	Value for BT Enable parameter (e.g. CG2900_BT_DISABLE).
+ */
+static void send_bt_enable(struct cg2900_chip_info *info, u8 bt_enable)
+{
+	struct bt_vs_bt_enable_cmd cmd;
+
+	cmd.op_code = cpu_to_le16(CG2900_BT_OP_VS_BT_ENABLE);
+	cmd.plen = BT_PARAM_LEN(sizeof(cmd));
+	cmd.enable = bt_enable;
+	cg2900_send_bt_cmd(info->user_in_charge, info->logger,
+			   &cmd, sizeof(cmd));
+}
+
+/**
  * send_bd_address() - Send HCI VS command with BD address to the chip.
  */
 static void send_bd_address(struct cg2900_chip_info *info)
@@ -1518,17 +1534,27 @@ static bool handle_vs_system_reset_cmd_complete(struct cg2900_chip_dev *dev,
 		status);
 
 	if (HCI_BT_ERROR_NO_ERROR == status) {
-		/*
-		 * We must now wait for the selftest results. They will take a
-		 * certain amount of time to finish so start a delayed work that
-		 * will then send the command.
-		 */
-		dev_dbg(BOOT_DEV,
-			"New boot_state: BOOT_READ_SELFTEST_RESULT\n");
-		info->boot_state = BOOT_READ_SELFTEST_RESULT;
-		queue_delayed_work(info->wq, &info->selftest_work.work,
-				   msecs_to_jiffies(SELFTEST_INITIAL));
-		info->nbr_of_polls = 0;
+		if (dev->chip.hci_revision == CG2900_PG2_REV) {
+			/*
+			 * We must now wait for the selftest results. They will
+			 * take a certain amount of time to finish so start a
+			 * delayed work that will then send the command.
+			 */
+			dev_dbg(BOOT_DEV,
+				"New boot_state: BOOT_READ_SELFTEST_RESULT\n");
+			info->boot_state = BOOT_READ_SELFTEST_RESULT;
+			queue_delayed_work(info->wq, &info->selftest_work.work,
+					   msecs_to_jiffies(SELFTEST_INITIAL));
+			info->nbr_of_polls = 0;
+		} else {
+			/*
+			 * We are now almost finished. Shut off BT Core. It will
+			 * be re-enabled by the Bluetooth driver when needed.
+			 */
+			dev_dbg(BOOT_DEV, "New boot_state: BOOT_DISABLE_BT\n");
+			info->boot_state = BOOT_DISABLE_BT;
+			send_bt_enable(info, CG2900_BT_DISABLE);
+		}
 	} else {
 		dev_err(BOOT_DEV,
 			"Received Reset complete event with status 0x%X\n",
@@ -1569,8 +1595,6 @@ static bool handle_vs_read_selftests_cmd_complete(struct cg2900_chip_dev *dev,
 
 	if (CG2900_BT_SELFTEST_SUCCESSFUL == evt->result ||
 	    CG2900_BT_SELFTEST_FAILED == evt->result) {
-		struct bt_vs_bt_enable_cmd cmd;
-
 		if (CG2900_BT_SELFTEST_FAILED == evt->result)
 			dev_err(BOOT_DEV, "CG2900 self test failed\n");
 
@@ -1580,11 +1604,7 @@ static bool handle_vs_read_selftests_cmd_complete(struct cg2900_chip_dev *dev,
 		 */
 		dev_dbg(BOOT_DEV, "New boot_state: BOOT_DISABLE_BT\n");
 		info->boot_state = BOOT_DISABLE_BT;
-		cmd.op_code = cpu_to_le16(CG2900_BT_OP_VS_BT_ENABLE);
-		cmd.plen = BT_PARAM_LEN(sizeof(cmd));
-		cmd.enable = CG2900_BT_DISABLE;
-		cg2900_send_bt_cmd(info->user_in_charge, info->logger,
-				   &cmd, sizeof(cmd));
+		send_bt_enable(info, CG2900_BT_DISABLE);
 		return true;
 	} else if (CG2900_BT_SELFTEST_NOT_COMPLETED == evt->result) {
 		/*

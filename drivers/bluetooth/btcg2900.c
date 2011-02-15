@@ -303,9 +303,7 @@ static struct sk_buff *get_epta_mode_cmd(struct btcg2900_info *info,
 	}
 
 	/* If connected chip does not support the command return NULL */
-	if (CG2900_PG1_SPECIAL_HCI_REV != rev_data.revision &&
-	    CG2900_PG1_HCI_REV != rev_data.revision &&
-	    CG2900_PG2_HCI_REV != rev_data.revision)
+	if (CG2900_PG2_HCI_REV != rev_data.revision)
 		return NULL;
 
 	/* CG2900 used */
