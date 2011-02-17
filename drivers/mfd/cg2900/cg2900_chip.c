@@ -2038,10 +2038,15 @@ static void data_from_chip(struct cg2900_chip_dev *dev,
 	struct cg2900_chip_info *info = dev->c_data;
 	struct cg2900_user_data *user = NULL;
 
+	spin_lock_bh(&info->rw_lock);
+	/* Copy RX Data into logger.*/
+	if (info->logger)
+		cg2900_send_to_hci_logger(info->logger, skb,
+						LOGGER_DIRECTION_RX);
+
 	h4_channel = skb->data[0];
 	skb_pull(skb, HCI_H4_SIZE);
 
-	spin_lock_bh(&info->rw_lock);
 	/* First check if it is a BT or FM audio event */
 	if (is_bt_audio_user(info, h4_channel, skb))
 		user = info->bt_audio;

@@ -24,7 +24,7 @@
  * Must be max length of name plus characters used to define chip version.
  */
 #define LINE_BUFFER_LENGTH			(NAME_MAX + 30)
-
+#define LOGGER_HEADER_SIZE			1
 /**
  * cg2900_tx_to_chip() - Transmit buffer to the transport.
  * @user:	User data for BT command channel.
@@ -38,32 +38,13 @@ void cg2900_tx_to_chip(struct cg2900_user_data *user,
 		       struct cg2900_user_data *logger, struct sk_buff *skb)
 {
 	int err;
-	struct sk_buff *skb_log;
 	struct cg2900_chip_dev *chip_dev;
 
 	dev_dbg(user->dev, "cg2900_tx_to_chip %d bytes.\n", skb->len);
 
-	if (!logger)
-		goto transmit;
+	if (logger)
+		cg2900_send_to_hci_logger(logger, skb, LOGGER_DIRECTION_TX);
 
-	/*
-	 * Alloc a new sk_buff and copy the data into it. Then send it to
-	 * the HCI logger.
-	 */
-	skb_log = alloc_skb(skb->len + HCI_H4_SIZE, GFP_KERNEL);
-	if (!skb_log) {
-		dev_err(user->dev,
-			"cg2900_tx_to_chip: Couldn't allocate skb_log\n");
-		goto transmit;
-	}
-
-	memcpy(skb_put(skb_log, skb->len), skb->data, skb->len);
-	skb_log->data[0] = (u8) LOGGER_DIRECTION_TX;
-
-	if (logger->read_cb)
-		logger->read_cb(logger, skb_log);
-
-transmit:
 	chip_dev = cg2900_get_prv(user);
 	err = chip_dev->t_cb.write(chip_dev, skb);
 	if (err) {
@@ -263,6 +244,37 @@ int cg2900_read_and_send_file_part(struct cg2900_user_data *user,
 	return bytes_to_copy;
 }
 EXPORT_SYMBOL_GPL(cg2900_read_and_send_file_part);
+
+void cg2900_send_to_hci_logger(struct cg2900_user_data *logger,
+							struct sk_buff *skb,
+							u8 direction)
+{
+	struct sk_buff *skb_log;
+	u8 *p;
+
+	/*
+	 * Alloc a new sk_buff and copy the data into it. Then send it to
+	 * the HCI logger.
+	 */
+	skb_log = alloc_skb(skb->len + LOGGER_HEADER_SIZE, GFP_NOWAIT);
+	if (!skb_log) {
+		pr_err("cg2900_send_to_hci_logger:\
+				 Couldn't allocate skb_log\n");
+		return;
+	}
+	/* Reserve 1 byte for direction.*/
+	skb_reserve(skb_log, LOGGER_HEADER_SIZE);
+
+	memcpy(skb_put(skb_log, skb->len), skb->data, skb->len);
+	p = skb_push(skb_log, LOGGER_HEADER_SIZE);
+	*p = (u8) direction;
+
+	if (logger->read_cb)
+		logger->read_cb(logger, skb_log);
+
+	return;
+}
+EXPORT_SYMBOL_GPL(cg2900_send_to_hci_logger);
 
 MODULE_AUTHOR("Par-Gunnar Hjalmdahl ST-Ericsson");
 MODULE_LICENSE("GPL v2");

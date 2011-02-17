@@ -53,5 +53,8 @@ extern void cg2900_create_work_item(struct workqueue_struct *wq,
 extern int cg2900_read_and_send_file_part(struct cg2900_user_data *user,
 					  struct cg2900_user_data *logger,
 					  struct cg2900_file_info *info);
+extern void cg2900_send_to_hci_logger(struct cg2900_user_data *logger,
+							struct sk_buff *skb,
+							u8 direction);
 
 #endif /* _CG2900_LIB_H_ */
