@@ -69,14 +69,6 @@ enum reset_state {
  *					complete event from the BT chip as a
  *					response to a BT Enable (true) command.
  * @ENABLE_BT_ENABLED:			The BT chip is enabled.
- * @ENABLE_WAITING_EPTA_RESET_CC:	The HCI driver is waiting for a command
- *					complete event from the BT chip as a
- *					response to EPTA Mode reset command.
- * @ENABLE_EPTA_RESET:			The ePTA is reset.
- * @ENABLE_WAITING_EPTA_ENABLED_CC:	The HCI driver is waiting for a command
- *					complete event from the BT chip as a
- *					response to EPTA Mode enable command.
- * @ENABLE_EPTA_ENABLED:		The ePTA is enabled.
  * @ENABLE_WAITING_BT_DISABLED_CC:	The HCI driver is waiting for a command
  *					complete event from the BT chip as a
  *					response to a BT Enable (false) command.
@@ -89,17 +81,13 @@ enum enable_state {
 	ENABLE_IDLE,
 	ENABLE_WAITING_BT_ENABLED_CC,
 	ENABLE_BT_ENABLED,
-	ENABLE_WAITING_EPTA_RESET_CC,
-	ENABLE_EPTA_RESET,
-	ENABLE_WAITING_EPTA_ENABLED_CC,
-	ENABLE_EPTA_ENABLED,
 	ENABLE_WAITING_BT_DISABLED_CC,
 	ENABLE_BT_DISABLED,
 	ENABLE_BT_ERROR
 };
 
 /* Defines which state the driver has when BT is active */
-#define BTCG2900_ACTIVE_STATE		ENABLE_EPTA_ENABLED
+#define BTCG2900_ACTIVE_STATE		ENABLE_BT_ENABLED
 
 /**
  * struct btcg2900_info - Specifies HCI driver private data.
@@ -174,47 +162,6 @@ struct vs_bt_enable_cmd {
 	u8	enable;
 } __attribute__((packed));
 
-/* Defines for vs_write_epta_mode_cmd */
-#define BT_VS_WRITE_EPTA_MODE			0xFCDD
-#define EPTA_ENABLE				0x01
-#define EPTA_WLAN_AWAKE				0x02
-#define EPTA_KEEP_TRANSMITTING			0x04
-#define EPTA_FORWARD_RX_MESSAGES		0x08
-#define EPTA_FORWARD_TX_MESSAGES		0x10
-#define EPTA_LOOP_TX_MESSAGES_FROM_HOST		0x20
-#define EPTA_ENABLE_PUSH_PULL			0x40
-#define EPTA_ENABLE_ROBUST_MODE			0x80
-
-#define EPTA_ENABLE_FLAGS	(EPTA_ENABLE | EPTA_WLAN_AWAKE | \
-				 EPTA_KEEP_TRANSMITTING | \
-				 EPTA_ENABLE_PUSH_PULL | \
-				 EPTA_ENABLE_ROBUST_MODE)
-#define EPTA_SUPERVISION_TO	0x0800
-#define EPTA_PERIODIC_TO	0x0000
-#define EPTA_CLOCK_M		0x0000
-#define EPTA_CLOCK_N		0x0000
-
-/**
- * struct vs_write_epta_mode_cmd - Specifies HCI VS WriteEptaMode command.
- *
- * @op_code:			HCI command op code.
- * @len:			Parameter length of command.
- * @epta_flags:			Flags to control ePTA mode.
- * @supervision_timeout:	Supervision timeout in BT half-slots (optional).
- * @periodic_timeout:		Periodic timeout in BT half-slots (optional).
- * @clock_m:			Serial interface clock setting (optional).
- * @clock_n:			Serial interface clock setting (optional).
- */
-struct vs_write_epta_mode_cmd {
-	__le16	op_code;
-	u8	len;
-	u8	epta_flags;
-	__le16	supervision_timeout;
-	__le16	periodic_timeout;
-	u8	clock_m;
-	u8	clock_n;
-} __attribute__((packed));
-
 /*
  * hci_wait_queue - Main Wait Queue in HCI driver.
  */
@@ -274,56 +221,6 @@ static struct sk_buff *get_bt_enable_cmd(struct btcg2900_info *info,
 		cmd->enable = VS_BT_ENABLE;
 	else
 		cmd->enable = VS_BT_DISABLE;
-
-	return skb;
-}
-
-/**
- * get_epta_mode_cmd() - Get HCI Write ePTA Mode command.
- * @info:		Device info structure.
- * @epta_enable:	true if ePTA shall be enabled, false otherwise.
- *
- * Returns:
- *   NULL if no command shall be sent,
- *   sk_buffer with command otherwise.
- */
-static struct sk_buff *get_epta_mode_cmd(struct btcg2900_info *info,
-					 bool epta_enable)
-{
-	struct sk_buff *skb;
-	struct vs_write_epta_mode_cmd *cmd;
-	struct cg2900_rev_data rev_data;
-	struct cg2900_user_data *pf_data;
-
-	pf_data = dev_get_platdata(info->cmd);
-
-	if (!pf_data->get_local_revision(pf_data, &rev_data)) {
-		BT_ERR(NAME "Couldn't get revision");
-		return NULL;
-	}
-
-	/* If connected chip does not support the command return NULL */
-	if (CG2900_PG2_HCI_REV != rev_data.revision)
-		return NULL;
-
-	/* CG2900 used */
-	skb = pf_data->alloc_skb(sizeof(*cmd), GFP_KERNEL);
-	if (!skb) {
-		BT_ERR(NAME "Could not allocate skb");
-		return NULL;
-	}
-
-	cmd = (struct vs_write_epta_mode_cmd *)skb_put(skb, sizeof(*cmd));
-	cmd->op_code = cpu_to_le16(BT_VS_WRITE_EPTA_MODE);
-	cmd->len = sizeof(*cmd) - BT_HEADER_LENGTH;
-	if (epta_enable)
-		cmd->epta_flags = EPTA_ENABLE_FLAGS;
-	else
-		cmd->epta_flags = 0x00;
-	cmd->supervision_timeout = cpu_to_le16(EPTA_SUPERVISION_TO);
-	cmd->periodic_timeout = cpu_to_le16(EPTA_PERIODIC_TO);
-	cmd->clock_m = EPTA_CLOCK_M;
-	cmd->clock_n = EPTA_CLOCK_N;
 
 	return skb;
 }
@@ -421,49 +318,6 @@ static bool handle_bt_enable_stat(struct btcg2900_info *info, u8 status)
 }
 
 /**
- * handle_epta_mode_comp() - Handle received WriteEptaMode Complete event.
- * @info:	Info structure.
- * @skb:	Buffer with data coming from device.
- *
- * Returns:
- *   true if data has been handled internally,
- *   false otherwise.
- */
-static bool handle_epta_mode_comp(struct btcg2900_info *info, u8 status)
-{
-	if (info->enable_state != ENABLE_WAITING_EPTA_RESET_CC &&
-	    info->enable_state != ENABLE_WAITING_EPTA_ENABLED_CC)
-		return false;
-
-	/*
-	 * This is the command complete event for the HCI_Cmd_VS_Write_Epta_Mode
-	 * Check result and update state.
-	 */
-	if (status != HCI_ERR_NO_ERROR) {
-		BT_ERR(NAME "Could not enable/reset ePTA (0x%X, %d)",
-			   status, info->enable_state);
-		BT_DBG("New enable_state: ENABLE_BT_ERROR");
-		info->enable_state = ENABLE_BT_ERROR;
-		goto finished;
-	}
-
-	if (info->enable_state == ENABLE_WAITING_EPTA_ENABLED_CC) {
-		BT_DBG("New enable_state: ENABLE_EPTA_ENABLED");
-		info->enable_state = ENABLE_EPTA_ENABLED;
-		BT_DBG("CG2900 ePTA is enabled");
-	} else {
-		BT_DBG("New enable_state: ENABLE_EPTA_RESET");
-		info->enable_state = ENABLE_EPTA_RESET;
-		BT_DBG("CG2900 ePTA is reset");
-	}
-
-finished:
-	/* Wake up whoever is waiting for this result. */
-	wake_up_all(&hci_wait_queue);
-	return true;
-}
-
-/**
  * handle_rx_evt() - Check if received data is response to internal command.
  * @info:	Info structure.
  * @skb:	Buffer with data coming from device.
@@ -492,8 +346,6 @@ static bool handle_rx_evt(struct btcg2900_info *info, struct sk_buff *skb)
 
 		if (op_code == BT_VS_BT_ENABLE)
 			pkt_handled = handle_bt_enable_comp(info, status);
-		else if (op_code == BT_VS_WRITE_EPTA_MODE)
-			pkt_handled = handle_epta_mode_comp(info, status);
 	} else if (evt->evt == HCI_EV_CMD_STATUS) {
 		cmd_status = (struct hci_ev_cmd_status *)(evt + 1);
 		op_code = le16_to_cpu(cmd_status->opcode);
@@ -744,33 +596,6 @@ static int btcg2900_open(struct hci_dev *hdev)
 	err = send_enable_cmd(info, &en_info);
 	if (err) {
 		BT_ERR("Couldn't enable BT core (%d)", err);
-		goto handle_error;
-	}
-
-	/* Now reset the BT/WLAN ePTA coex */
-	en_info.enable = false;
-	en_info.get_cmd = get_epta_mode_cmd;
-	en_info.name = "VS Write ePTA Mode (false)";
-	en_info.success = ENABLE_EPTA_RESET;
-	en_info.awaiting_cc = ENABLE_WAITING_EPTA_RESET_CC;
-	en_info.failed = ENABLE_EPTA_ENABLED;
-
-	err = send_enable_cmd(info, &en_info);
-	if (err) {
-		BT_ERR("Couldn't reset ePTA (%d)", err);
-		goto handle_error;
-	}
-
-	/* Now enable the BT/WLAN ePTA coex */
-	en_info.enable = true;
-	en_info.name = "VS Write ePTA Mode (true)";
-	en_info.success = ENABLE_EPTA_ENABLED;
-	en_info.awaiting_cc = ENABLE_WAITING_EPTA_ENABLED_CC;
-	en_info.failed = ENABLE_EPTA_RESET;
-
-	err = send_enable_cmd(info, &en_info);
-	if (err) {
-		BT_ERR("Couldn't enable ePTA (%d)", err);
 		goto handle_error;
 	}
 
