@@ -2614,7 +2614,6 @@ void wake_up_read_queue(void)
 void cg2900_handle_device_reset(void)
 {
 	FM_INFO_REPORT("cg2900_handle_device_reset");
-	mutex_lock(&fm_mutex);
 	users = 0;
 	cg2900_device.state = FMR_SWITCH_OFF;
 	cg2900_device.frequency = 0;
@@ -2623,7 +2622,6 @@ void cg2900_handle_device_reset(void)
 	cg2900_device.seekstatus = FMR_SEEK_NONE;
 	fm_event = CG2900_EVENT_NO_EVENT;
 	no_of_scan_freq = 0;
-	mutex_unlock(&fm_mutex);
 }
 
 module_init(radio_cg2900_init);

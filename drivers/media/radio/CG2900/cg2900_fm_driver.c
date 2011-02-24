@@ -240,8 +240,8 @@ static struct task_struct *irq_thread_task;
 static struct device *cg2900_fm_dev;
 static struct mutex write_mutex;
 static struct mutex send_cmd_mutex;
-static struct mutex read_mutex;
 static spinlock_t fmd_spinlock;
+static spinlock_t fmd_spinlock_read;
 
 /* Debug Level
  * 1: Only Error Logs
@@ -1025,7 +1025,7 @@ static void fmd_read_cb(
 	if (skb->data == NULL || skb->len == 0)
 		goto error;
 
-	mutex_lock(&read_mutex);
+	spin_lock(&fmd_spinlock_read);
 	CG2900_HEX_READ_PACKET_DUMP;
 	/*
 	 * The first byte is length of bytes following bytes
@@ -1037,7 +1037,7 @@ static void fmd_read_cb(
 
 error:
 	kfree_skb(skb);
-	mutex_unlock(&read_mutex);
+	spin_unlock(&fmd_spinlock_read);
 }
 
 /**
@@ -1132,7 +1132,9 @@ static void fmd_receive_data(
 static void fmd_reset_cb(struct cg2900_user_data *dev)
 {
 	FM_INFO_REPORT("fmd_reset_cb: Device Reset");
+	spin_lock(&fmd_spinlock_read);
 	cg2900_handle_device_reset();
+	spin_unlock(&fmd_spinlock_read);
 }
 
 /**
@@ -1414,7 +1416,7 @@ static bool fmd_driver_init(void)
 	pf_data = dev_get_platdata(cg2900_fm_dev);
 
 	/* Create Mutex For Reading and Writing */
-	mutex_init(&read_mutex);
+	spin_lock_init(&fmd_spinlock_read);
 	mutex_init(&write_mutex);
 	mutex_init(&send_cmd_mutex);
 	spin_lock_init(&fmd_spinlock);
@@ -1460,7 +1462,6 @@ static void fmd_driver_exit(void)
 	FM_INFO_REPORT("fmd_driver_exit");
 	irq_thread_required = false;
 	mutex_destroy(&write_mutex);
-	mutex_destroy(&read_mutex);
 	mutex_destroy(&send_cmd_mutex);
 	fmd_stop_irq_thread();
 	/* Close the FM channel */
