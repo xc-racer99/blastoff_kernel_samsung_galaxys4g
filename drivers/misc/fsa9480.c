@@ -126,7 +126,7 @@ u8 MicroTAstatus=0;
 u8 MicroJigstatus=0;
 //#endif
 
-#ifdef CONFIG_USB_S3C_OTG_HOST
+#if defined CONFIG_USB_S3C_OTG_HOST || defined CONFIG_USB_DWC_OTG
 extern void set_otghost_mode(int mode);
 #endif
 
@@ -682,7 +682,7 @@ static void fsa9480_detect_dev(struct fsa9480_usbsw *usbsw)
 					dev_err(&client->dev,
 						"%s: err %d\n", __func__, ret);
 			}
-#ifdef CONFIG_USB_S3C_OTG_HOST
+#if defined CONFIG_USB_S3C_OTG_HOST || defined CONFIG_USB_DWC_OTG
 // sztupy: handle automatic otg switching
                        if (val1 & DEV_USB_OTG) {
                                // otg cable detected
@@ -851,7 +851,7 @@ static void fsa9480_detect_dev(struct fsa9480_usbsw *usbsw)
 				pdata->usb_cb(FSA9480_DETACHED);
 				}
 #endif
-#ifdef CONFIG_USB_S3C_OTG_HOST
+#if defined CONFIG_USB_S3C_OTG_HOST || defined CONFIG_USB_DWC_OTG
                                // sztupy: also switch off otg host mode
                                set_otghost_mode(0);
 #endif
