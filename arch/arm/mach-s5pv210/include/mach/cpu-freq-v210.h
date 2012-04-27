@@ -17,19 +17,28 @@
 /*
  * APLL M,P,S value for target frequency
  **/
+
 #define APLL_VAL_1664	((1<<31)|(417<<16)|(3<<8)|(0))
+#define APLL_VAL_1440	((1<<31)|(360<<16)|(6<<8)|(1))
+#define APLL_VAL_1400	((1<<31)|(175<<16)|(3<<8)|(1))
 #define APLL_VAL_1332	((1<<31)|(444<<16)|(4<<8)|(0))
+#define APLL_VAL_1300	((1<<31)|(325<<16)|(6<<8)|(1))
 #define APLL_VAL_1200	((1<<31)|(150<<16)|(3<<8)|(1))
 #define APLL_VAL_1000	((1<<31)|(125<<16)|(3<<8)|(1))
 #define APLL_VAL_800	((1<<31)|(100<<16)|(3<<8)|(1))
 
+#define OC_LX_SHIFT  3   // [antsvx] OC/UV shift of Ln indices from standard ROM
+
 enum perf_level {
-	L0 = 0,	// 1GHz
-	L1,	// 800MHz
-	L2,	// 400MHz
-	L3,	// 200MHz
-	L4,	// 100MHz
-	MAX_PERF_LEVEL = L4,
+	L0 = 0,		// 1.4GHz
+	L1,		// 1.3GHz
+	L2,		// 1.2GHz
+	L3,		// 1.0GHz
+	L4,		// 800Hz
+	L5,		// 400Hz
+	L6,		// 200Hz
+	L7,		// 100Hz
+	MAX_PERF_LEVEL = L7
 };
 
 #define SLEEP_FREQ      (800 * 1000) /* Use 800MHz when entering sleep */
@@ -40,6 +49,18 @@ enum perf_level {
 #define ENABLE_FURTHER_CPUFREQ          0x20
 #define MASK_FURTHER_CPUFREQ            0x30
 /* With 0x00(NOCHANGE), it depends on the previous "further" status */
+
+/* For cpu-freq driver */
+struct s5pv210_cpufreq_voltage {
+	unsigned int	freq;	/* kHz */
+	unsigned long	varm;	/* uV */
+	unsigned long	vint;	/* uV */
+};
+
+struct s5pv210_cpufreq_data {
+	struct s5pv210_cpufreq_voltage	*volt;
+	unsigned int			size;
+};
 
 #ifdef CONFIG_DVFS_LIMIT
 enum {

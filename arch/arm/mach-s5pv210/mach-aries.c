@@ -5915,7 +5915,7 @@ static struct i2c_board_info i2c_devs8[] __initdata = {
 
 static int fsa9480_init_flag = 0;
 static bool mtp_off_status;
-extern int max8998_check_vdcin();
+extern int max8998_check_vdcin(void);
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 extern u16 askonstatus;
 void fsa9480_usb_cb(bool attached)
@@ -7671,7 +7671,7 @@ static void __init sound_init(void)
 #endif
 }
 
-static void __init onenand_init()
+static void __init onenand_init(void)
 {
 	struct clk *clk = clk_get(NULL, "onenand");
 	BUG_ON(!clk);

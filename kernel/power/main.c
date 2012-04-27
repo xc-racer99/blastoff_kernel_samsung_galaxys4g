@@ -290,6 +290,11 @@ static ssize_t dvfslock_ctrl(const char *buf, size_t count)
 	if (dtime_msec  == 0)
 		return -EINVAL;
 
+        // [antsvx] 
+        // Looks like delayd work is done with high CPU frequencies.
+        // May want to add OC_LX_SHIFT to L1 and L0 here so it's not running way overcloced
+        // On the other hand that's why we overclocked in the first place - so let it run fast!
+
 	if (dlevel)
 		dlevel = L1;
 	else
