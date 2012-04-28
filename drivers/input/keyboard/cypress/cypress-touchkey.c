@@ -23,8 +23,9 @@
 //
 // Modified by AntonX for SGS4G (VibrantPlus) antsvx kernel.
 //
-// Introduced touchkey_is_on variable to avoid erroneous writes when controller power is off.
-// Streamlined and cleaned some tracing. See _BLN_TRACE macro.
+// Added mutexes to avoid race conditions with BLN.
+// Avoided attempted writes to unpowered controller.
+// Streamlined and cleaned some tracing (see _BLN_TRACE macro).
 //
 
 #include <linux/module.h>
@@ -41,6 +42,8 @@
 #include <linux/regulator/consumer.h>
 #endif
 
+// [antsvx]
+
 //#define _BLN_TRACE
 
 #ifdef _BLN_TRACE
@@ -51,6 +54,10 @@
   #define _pr_info3( a, b, c ) ((void)0)
 #endif
 
+static DECLARE_MUTEX(enable_sem);
+static DECLARE_MUTEX(i2c_sem);
+
+// [/antsvx]
 
 #define TOUCH_UPDATE
 #if defined(TOUCH_UPDATE)
@@ -119,7 +126,7 @@ struct cypress_touchkey_devdata {
 	bool is_dead;
 	bool is_powering_on;
 	bool has_legacy_keycode;
-	bool touchkey_is_on;
+	bool touchkey_is_on; // [antsvx]
 };
 
 static void turn_touchkey( struct cypress_touchkey_devdata * devdata, bool is_on )
@@ -134,10 +141,13 @@ static int i2c_touchkey_read_byte(struct cypress_touchkey_devdata *devdata,
 	int ret;
 	int retry = 2;
 
+	down(&i2c_sem);
+
 	while (true) {
 		ret = i2c_smbus_read_byte(devdata->client);
 		if (ret >= 0 ) {
 			*val = ret;
+			up(&i2c_sem);
 			return 0;
 		}
 
@@ -146,6 +156,8 @@ static int i2c_touchkey_read_byte(struct cypress_touchkey_devdata *devdata,
 			break;
 		msleep(10);
 	}
+
+	up(&i2c_sem);
 
 	return ret;
 }
@@ -156,18 +168,27 @@ static int i2c_touchkey_write_byte(struct cypress_touchkey_devdata *devdata,
 	int ret;
 	int retry = 2;
 
-	if ( ! devdata->touchkey_is_on ) return 0;
+	down(&i2c_sem);
+
+	if ( ! devdata->touchkey_is_on ) {
+		up(&i2c_sem);
+		return 0;
+	}
 
 	while (true) {
 		ret = i2c_smbus_write_byte(devdata->client, val);
-		if ( ! ret || ! devdata->touchkey_is_on )
+		if ( ! ret || ! devdata->touchkey_is_on ) {
+			up(&i2c_sem);
 			return 0;
+		}
 
 		dev_err(&devdata->client->dev, "i2c write error, val: %d, touchkey_is_on: %d\n", val, (int) devdata->touchkey_is_on);
 		if (!retry--)
 			break;
 		msleep(10);
 	}
+
+	up(&i2c_sem);
 
 	return ret;
 }
@@ -198,6 +219,8 @@ static int recovery_routine(struct cypress_touchkey_devdata *devdata)
 
 	irq_eint = devdata->client->irq;
 
+	down(&enable_sem);
+
 	all_keys_up(devdata);
 
 	disable_irq_nosync(irq_eint);
@@ -219,6 +242,9 @@ static int recovery_routine(struct cypress_touchkey_devdata *devdata)
 	turn_touchkey( devdata, false );
 	dev_err(&devdata->client->dev, "%s: touchkey died\n", __func__);
 out:
+        
+        up(&enable_sem);
+
 	return ret;
 }
 #if defined(CONFIG_S5PC110_DEMPSEY_BOARD)
@@ -305,10 +331,14 @@ static void cypress_touchkey_early_suspend(struct early_suspend *h)
 
         _pr_info("%s: suspending...\n", __FUNCTION__);	
 
-	devdata->is_powering_on = true;
+        down(&enable_sem);
 
-	if (unlikely(devdata->is_dead))
+	if (unlikely(devdata->is_dead)) {
+		up(&enable_sem);
 		return;
+	}
+
+	devdata->is_powering_on = true;
 
 	disable_irq(devdata->client->irq);
 	
@@ -326,6 +356,9 @@ static void cypress_touchkey_early_suspend(struct early_suspend *h)
        #if defined(CONFIG_S5PC110_DEMPSEY_BOARD)
 	touchkey_ldo_on(0);
        #endif
+
+       up(&enable_sem);
+
        _pr_info("%s: suspended\n", __FUNCTION__);
 }
 
@@ -335,6 +368,8 @@ static void cypress_touchkey_early_resume(struct early_suspend *h)
 		container_of(h, struct cypress_touchkey_devdata, early_suspend);
 
 	_pr_info("%s: resuming...\n", __FUNCTION__);
+
+	down(&enable_sem);
 
 	#if defined(CONFIG_S5PC110_DEMPSEY_BOARD)
 		touchkey_ldo_on(1);
@@ -350,6 +385,7 @@ static void cypress_touchkey_early_resume(struct early_suspend *h)
 		turn_touchkey( devdata, false );
 		dev_err(&devdata->client->dev, "%s: touch keypad not responding"
 				" to commands, disabling\n", __func__);
+		up(&enable_sem);
 		return;
 	}
 #endif
@@ -357,6 +393,8 @@ static void cypress_touchkey_early_resume(struct early_suspend *h)
 	enable_irq(devdata->client->irq);
 	devdata->is_powering_on = false;
         
+        up(&enable_sem);
+
         _pr_info("%s: resumed\n", __FUNCTION__);
 }
 #endif
@@ -646,7 +684,13 @@ static void disable_touchkey_backlights(void)
 
 static void enable_led_notification(void)
 {                        
+	if (unlikely(bln_devdata->is_dead))
+		return;
+	
 	if (bln_enabled) {
+
+		down(&enable_sem);
+
 		/* is_powering_on signals whether touchkey lights are used for touchmode */
 		_pr_info("%s: bln interface enabled\n", __FUNCTION__); //remove me
 		
@@ -673,12 +717,19 @@ static void enable_led_notification(void)
 		}
 		else
 			_pr_info("%s: cannot set notification led, touchkeys are enabled\n",__FUNCTION__);
+	
+		up(&enable_sem);
 	}
 }
 
 static void disable_led_notification(void)
 {
 	_pr_info("%s: disabling notification led...\n", __FUNCTION__);
+
+	if (unlikely(bln_devdata->is_dead))
+		return;
+
+	down(&enable_sem);
 
 	/* disable the blink state */
 	bln_blink_enabled = false;
@@ -690,6 +741,9 @@ static void disable_led_notification(void)
 
 	/* signal led notification is disabled */
 	bln_notification_ongoing = false;
+
+	up(&enable_sem);
+	
 	_pr_info("%s: disabled notification led\n", __FUNCTION__);
 }
 
