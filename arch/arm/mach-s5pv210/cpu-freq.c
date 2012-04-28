@@ -575,24 +575,24 @@ static int s5pv210_cpufreq_target(struct cpufreq_policy *policy,
 		goto out;
 	}
 
-	if ( index == L0 ) { // 1.4 Ghz
-		if ( old_index > index + 2 ) index = index + 2;
-		else if ( old_index > index + 1 ) index = index + 1;
+	switch( index ) {
+	  case L0 : // 1.4 Ghz
+	    	if ( old_index > L3 ) index = L3;
+	    	else if ( old_index > L2 ) index = L2;
+	    	else if ( old_index > L1 ) index = L1;
+	    	break;
+	  case L1 : // 1.3 Ghz
+	    	if ( old_index > L3 ) index = L3;
+	    	else if ( old_index > L2 ) index = L2;
+	    	break;
+	  case L2 : // 1.2 Ghz
+	    	if ( old_index > L4 ) index = L4;
+	    	else if ( old_index > L3 ) index = L3;
+	    	break;
+	  case L3 : // 1.0 Ghz
+		if ( old_index > L4 ) index = L4;
+		break;
 	}
-
-	if ( index == L1 ) { // 1.3 Ghz
-		if ( old_index > index + 2 ) index = index + 2;
-		else if ( old_index > index + 1 ) index = index + 1;
-	}
-
-	if ( index == L2 ) { // 1.2 Ghz
-		if ( old_index > index + 2 ) index = index + 2;
-		else if ( old_index > index + 1 ) index = index + 1;
-	}
-
-	if ( index == L3 ) { // 1.0 Ghz, more relaxed
-		if ( old_index > index + 1 ) index = index + 1;
-	}  
 
         // [/antsvx] end of smooth rapming up
 

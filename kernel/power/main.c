@@ -291,14 +291,13 @@ static ssize_t dvfslock_ctrl(const char *buf, size_t count)
 		return -EINVAL;
 
         // [antsvx] 
-        // Looks like delayd work is done with high CPU frequencies.
-        // May want to add OC_LX_SHIFT to L1 and L0 here so it's not running way overcloced
-        // On the other hand that's why we overclocked in the first place - so let it run fast!
+        // Let this run at standard Samsung (non-OC) frequencies.
+        // The highest freqs L0 and L1 may not be even enabled by the user.
 
 	if (dlevel)
-		dlevel = L1;
+		dlevel = L1 + OC_LX_SHIFT;
 	else
-		dlevel = L0;
+		dlevel = L0 + OC_LX_SHIFT;
 
 	printk(KERN_DEBUG "%s : level=%d, time=%d\n", __func__, dlevel, dtime_msec);
 
