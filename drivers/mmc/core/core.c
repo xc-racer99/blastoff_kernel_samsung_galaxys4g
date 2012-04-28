@@ -310,12 +310,27 @@ void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card)
 		timeout_us += data->timeout_clks * 1000 /
 			(card->host->ios.clock / 1000);
 
+/* [antsvx]
+SD2.0 specification says the max. timeout for writes is 250msecs
+for SDHC cards. But when the card is almost full and there are too few
+free sectors, the garbage collectors inside SD card  may take more time
+and hence delaying the write more than 250msecs. This typically happens
+with cards that don't adhere to specification. Based on this the timeout
+is increased to 300msecs but still for some cards this is not sufficient.
+
+Few SanDisk class4 SD cards violate the spec. and may take more time than
+expected when the card is full. So increase the data timeout to 800msecs,
+otherwise we might see file system corruption due to loss of important FS
+metadata in timeouts.
+[/antsvx] */
+
 		if (data->flags & MMC_DATA_WRITE)
 			/*
 			 * The limit is really 250 ms, but that is
 			 * insufficient for some crappy cards.
 			 */
-			limit_us = 300000;
+			//limit_us = 300000;
+			limit_us = 800000;
 		else
 			limit_us = 100000;
 
