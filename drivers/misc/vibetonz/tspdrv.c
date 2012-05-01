@@ -83,8 +83,8 @@ static VibeInt8 g_nForceLog[FORCE_LOG_BUFFER_SIZE];
 #include "VibeOSKernelLinuxTime.c"
 
 /* timed_output */
-#define VIBRATOR_PERIOD	87084/2
-#define VIBRATOR_DUTY	87000/2
+//#define VIBRATOR_PERIOD	87084/2
+//#define VIBRATOR_DUTY	87000/2
 
 static struct hrtimer timer;
 
@@ -96,22 +96,12 @@ struct pwm_device	*vib_pwm;
 static int set_vibetonz(int timeout)
 {
 	if(!timeout) {
-		pwm_disable(Immvib_pwm);
-		printk("[VIBETONZ] DISABLE\n");
-		gpio_set_value(GPIO_VIBTONE_EN1, GPIO_LEVEL_LOW);
-		gpio_direction_input(GPIO_VIBTONE_EN1);
-		s3c_gpio_setpull(GPIO_VIBTONE_EN1,S3C_GPIO_PULL_DOWN);
+            	ImmVibeSPI_ForceOut_AmpDisable(0);
             	wake_unlock(&vib_wake_lock);
 	}
 	else {
             	wake_lock(&vib_wake_lock);
-		pwm_config(Immvib_pwm, VIBRATOR_DUTY, VIBRATOR_PERIOD);
-		pwm_enable(Immvib_pwm);
-		
-		printk("[VIBETONZ] ENABLE\n");
-		gpio_direction_output(GPIO_VIBTONE_EN1, GPIO_LEVEL_LOW);
-		mdelay(1);
-		gpio_set_value(GPIO_VIBTONE_EN1, GPIO_LEVEL_HIGH);
+                ImmVibeSPI_ForceOut_AmpEnable(0);
 	}
 
 	vibrator_value = timeout;
@@ -144,7 +134,7 @@ static int get_time_for_vibetonz(struct timed_output_dev *dev)
 
 static void enable_vibetonz_from_user(struct timed_output_dev *dev,int value)
 {
-	printk("[VIBETONZ] %s : time = %d msec \n",__func__,value);
+	//printk("[VIBETONZ] %s : time = %d msec \n",__func__,value);
 	hrtimer_cancel(&timer);
 	
 	set_vibetonz(value);
@@ -238,7 +228,7 @@ EXPORT_SYMBOL(immTest_test);
 extern long int freq_count;
 static ssize_t immTest_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	printk(KERN_INFO "[VIBETONZ] %s : operate nothing\n", __FUNCTION__);
+	//printk(KERN_INFO "[VIBETONZ] %s : operate nothing\n", __FUNCTION__);
 
 	return 0;
 }
@@ -248,7 +238,7 @@ static ssize_t immTest_store(struct device *dev, struct device_attribute *attr, 
 	unsigned long arg1=0, arg2=0;
 
 	unsigned long value = simple_strtoul(buf, &after, 10);
-	printk(KERN_INFO "[VIBETONZ] value:%ld\n", value);
+	//printk(KERN_INFO "[VIBETONZ] value:%ld\n", value);
 
 	if (value > 0) 
 		ImmVibeSPI_ForceOut_Set(0, value);
