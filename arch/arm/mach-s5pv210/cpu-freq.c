@@ -567,7 +567,8 @@ static int s5pv210_cpufreq_target(struct cpufreq_policy *policy,
 	if (s3c_freqs.freqs.new == s3c_freqs.freqs.old && !first_run)
 		goto out;
 
-        // [antsvx] OC: smooth ramping up, don't allow direct jumps to highest frequencies
+#if 0   // [antsvx] OC: Smooth ramping up, don't allow direct jumps to highest frequencies.
+        // Disable for now, may be better not to use with smart interactive governors.
 
 	if (cpufreq_frequency_table_target(policy, freq_table,
 			s3c_freqs.freqs.old, relation, &old_index)) {
@@ -594,7 +595,7 @@ static int s5pv210_cpufreq_target(struct cpufreq_policy *policy,
 		break;
 	}
 
-        // [/antsvx] end of smooth rapming up
+#endif	// [/antsvx] end of smooth ramping up
 
 	// Subtract the voltage in the undervolt table before supplying it to the cpu
 	// Got to multiply by 1000 to account for the conversion between SGS and NS
