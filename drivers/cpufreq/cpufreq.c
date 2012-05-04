@@ -1685,6 +1685,20 @@ static int __cpufreq_governor(struct cpufreq_policy *policy,
 	return ret;
 }
 
+static void set_governor_smooth_oc_scaling( struct cpufreq_governor * governor )
+{
+	if ( ! strnicmp( governor->name, "ondemand", CPUFREQ_NAME_LEN )
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMANDX
+	     || ! strnicmp( governor->name, "ondemandx", CPUFREQ_NAME_LEN )
+#endif
+#ifdef CONFIG_CPU_FREQ_GOV_INTELLIDEMAND
+	     || ! strnicmp( governor->name, "intellidemand", CPUFREQ_NAME_LEN )
+#endif
+           ) 
+        	governor->enable_smooth_oc_scaling = 1;
+	else
+		governor->enable_smooth_oc_scaling = 0;
+}
 
 int cpufreq_register_governor(struct cpufreq_governor *governor)
 {
@@ -1698,6 +1712,9 @@ int cpufreq_register_governor(struct cpufreq_governor *governor)
 	err = -EBUSY;
 	if (__find_governor(governor->name) == NULL) {
 		err = 0;
+
+		set_governor_smooth_oc_scaling( governor );
+
 		list_add(&governor->governor_list, &cpufreq_governor_list);
 	}
 

@@ -178,6 +178,8 @@ struct cpufreq_governor {
 			will fallback to performance governor */
 	struct list_head	governor_list;
 	struct module		*owner;
+        
+	int enable_smooth_oc_scaling; // [antsvx] for smooth OC
 };
 
 /* pass a target to the cpufreq driver 

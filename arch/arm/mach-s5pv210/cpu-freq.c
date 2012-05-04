@@ -449,6 +449,9 @@ void s5pv210_lock_dvfs_high_level(uint nToken, uint perf_level)
 	if (perf_level > (MAX_PERF_LEVEL - 1))
 		return;
 
+        if ( perf_level < L0 + OC_LX_SHIFT )
+        	perf_level = L0 + OC_LX_SHIFT; // for sanity don't allow to lock on OC freqs
+
 	//mutex_lock(&dvfs_high_lock);
 
 	g_dvfs_high_lock_token |= (1 << nToken);
@@ -512,6 +515,8 @@ static int s5pv210_cpufreq_target(struct cpufreq_policy *policy,
 	unsigned int pll_changing = 0;
 	unsigned int bus_speed_changing = 0;
 
+	char * opa = policy->governor->name;
+
 	mutex_lock(&set_freq_lock);
 
 	cpufreq_debug_printk(CPUFREQ_DEBUG_DRIVER, KERN_INFO,
@@ -567,32 +572,32 @@ static int s5pv210_cpufreq_target(struct cpufreq_policy *policy,
 	if (s3c_freqs.freqs.new == s3c_freqs.freqs.old && !first_run)
 		goto out;
 
-#if 0   // [antsvx] OC: Smooth ramping up, don't allow direct jumps to highest frequencies.
-        // Disable for now, may be better not to use with smart interactive governors.
+#if 1   // [antsvx] 
+        // OC: Smooth ramping up, don't allow direct jumps to OC frequencies.
+        // Use it only for ondemand-type governors that set the highest frequency right away.
 
-	if (cpufreq_frequency_table_target(policy, freq_table,
-			s3c_freqs.freqs.old, relation, &old_index)) {
-		ret = -EINVAL;
-		goto out;
-	}
+        if ( policy->governor->enable_smooth_oc_scaling ) {
 
-	switch( index ) {
-	  case L0 : // 1.4 Ghz
-	    	if ( old_index > L3 ) index = L3;
-	    	else if ( old_index > L2 ) index = L2;
-	    	else if ( old_index > L1 ) index = L1;
-	    	break;
-	  case L1 : // 1.3 Ghz
-	    	if ( old_index > L3 ) index = L3;
-	    	else if ( old_index > L2 ) index = L2;
-	    	break;
-	  case L2 : // 1.2 Ghz
-	    	if ( old_index > L4 ) index = L4;
-	    	else if ( old_index > L3 ) index = L3;
-	    	break;
-	  case L3 : // 1.0 Ghz
-		if ( old_index > L4 ) index = L4;
-		break;
+		if (cpufreq_frequency_table_target(policy, freq_table,
+				s3c_freqs.freqs.old, relation, &old_index)) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		switch( index ) {
+		  case L0 : // 1.4 Ghz
+	    		if ( old_index > L3 ) index = L3;
+			else if ( old_index > L2 ) index = L2;
+			else if ( old_index > L1 ) index = L1;
+		    	break;
+		  case L1 : // 1.3 Ghz
+		    	if ( old_index > L3 ) index = L3;
+		    	else if ( old_index > L2 ) index = L2;
+			break;
+		  case L2 : // 1.2 Ghz
+			if ( old_index > L3 ) index = L3;
+		    	break;
+		}
 	}
 
 #endif	// [/antsvx] end of smooth ramping up
