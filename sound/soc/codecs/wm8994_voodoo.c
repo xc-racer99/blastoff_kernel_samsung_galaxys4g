@@ -368,7 +368,8 @@ void update_recording_preset(bool with_mute)
 		return;
 
 	switch (recording_preset) {
-	case 0:
+	case 0: 
+#if 0  // [antsvx] if Recording Preset in Voodoo Sound is set to Original, don't mess with what Samsung has already set
 		// Original:
 		// On Galaxy S: IN1L_VOL1=11000 (+19.5 dB)
 		// On Nexus S: variable value
@@ -377,6 +378,7 @@ void update_recording_preset(bool with_mute)
 		wm8994_write(codec, WM8994_INPUT_MIXER_3, origin_recgain_mixer);
 		// DRC disabled
 		wm8994_write(codec, WM8994_AIF1_DRC1_1, 0x0080);
+#endif
 		break;
 	case 2:
 		// High sensitivy:

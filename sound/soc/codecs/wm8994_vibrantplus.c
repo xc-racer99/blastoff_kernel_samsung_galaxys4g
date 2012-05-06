@@ -1659,10 +1659,6 @@ void wm8994_record_main_mic(struct snd_soc_codec *codec)
 	val |= (WM8994_AIF1ADCR_SRC);
 	wm8994_write(codec, WM8994_AIF1_CONTROL_1, val);
 
-#ifdef CONFIG_SND_VOODOO_RECORD_PRESETS
-	voodoo_hook_record_main_mic();
-#endif
-
 	val = wm8994_read(codec, WM8994_POWER_MANAGEMENT_4);
 	val &= ~(WM8994_ADCL_ENA_MASK | WM8994_AIF1ADC1L_ENA_MASK);
 	val |= (WM8994_AIF1ADC1L_ENA | WM8994_ADCL_ENA);
@@ -1705,7 +1701,9 @@ void wm8994_record_main_mic(struct snd_soc_codec *codec)
 	else
 		wm8994_set_codec_gain(codec, RECORDING_MODE, RECORDING_MAIN);
 		
-
+#ifdef CONFIG_SND_VOODOO_RECORD_PRESETS
+	voodoo_hook_record_main_mic();
+#endif
 			
 	if(wm8994->ganlite_active == wificall_on)
 {				val |= (WM8994_IN1L_VU |0x10); //volume
