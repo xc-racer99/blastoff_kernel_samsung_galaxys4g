@@ -19,26 +19,31 @@
  **/
 
 #define APLL_VAL_1664	((1<<31)|(417<<16)|(3<<8)|(0))
+#define APLL_VAL_1500   ((1<<31)|(375<<16)|(6<<8)|(0))
 #define APLL_VAL_1440	((1<<31)|(360<<16)|(6<<8)|(1))
 #define APLL_VAL_1400	((1<<31)|(175<<16)|(3<<8)|(1))
 #define APLL_VAL_1332	((1<<31)|(444<<16)|(4<<8)|(0))
 #define APLL_VAL_1300	((1<<31)|(325<<16)|(6<<8)|(1))
 #define APLL_VAL_1200	((1<<31)|(150<<16)|(3<<8)|(1))
+#define APLL_VAL_1100   ((1<<31)|(275<<16)|(6<<8)|(1))
 #define APLL_VAL_1000	((1<<31)|(125<<16)|(3<<8)|(1))
+#define APLL_VAL_900    ((1<<31)|(225<<16)|(6<<8)|(1))
 #define APLL_VAL_800	((1<<31)|(100<<16)|(3<<8)|(1))
+#define APLL_VAL_600	((1<<31)|(75<<16)|(3<<8)|(1))
 
-#define OC_LX_SHIFT  3   // [antsvx] OC/UV shift of Ln indices from standard ROM
+#define OC_LX_SHIFT  4   // [antsvx] OC/UV shift of Ln indices from standard ROM
 
 enum perf_level {
 	L0 = 0,		// 1.4GHz
 	L1,		// 1.3GHz
 	L2,		// 1.2GHz
-	L3,		// 1.0GHz
-	L4,		// 800Hz
-	L5,		// 400Hz
-	L6,		// 200Hz
-	L7,		// 100Hz
-	MAX_PERF_LEVEL = L7
+	L3,             // 1.1Ghz
+	L4,		// 1.0GHz
+	L5,		// 800Hz
+	L6,		// 400Hz
+	L7,		// 200Hz
+	L8,		// 100Hz
+	MAX_PERF_LEVEL = L8
 };
 
 #define SLEEP_FREQ      (800 * 1000) /* Use 800MHz when entering sleep */
