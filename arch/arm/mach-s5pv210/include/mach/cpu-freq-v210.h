@@ -31,19 +31,21 @@
 #define APLL_VAL_800	((1<<31)|(100<<16)|(3<<8)|(1))
 #define APLL_VAL_600	((1<<31)|(75<<16)|(3<<8)|(1))
 
-#define OC_LX_SHIFT  4   // [antsvx] OC/UV shift of Ln indices from standard ROM
+extern int OC_LX_OFFSET_LUT[5]; // [antsvx] OC/UV Ln values to match original stock ROM
 
 enum perf_level {
-	L0 = 0,		// 1.4GHz
-	L1,		// 1.3GHz
-	L2,		// 1.2GHz
-	L3,             // 1.1Ghz
-	L4,		// 1.0GHz
-	L5,		// 800Hz
-	L6,		// 400Hz
-	L7,		// 200Hz
-	L8,		// 100Hz
-	MAX_PERF_LEVEL = L8
+	L0 = 0,		// 1.4 GHz
+	L1,		// 1.3 GHz
+	L2,		// 1.2 GHz
+	L3,             // 1.1 Ghz
+	L4,		// 1.0 GHz
+	L5,             // 900 Mhz
+	L6,		// 800 MHz
+	L7,             // 600 Mhz
+	L8,		// 400 MHz
+	L9,		// 200 MHz
+	L10,		// 100 MHz
+	MAX_PERF_LEVEL = L10
 };
 
 #define SLEEP_FREQ      (800 * 1000) /* Use 800MHz when entering sleep */

@@ -295,9 +295,9 @@ static ssize_t dvfslock_ctrl(const char *buf, size_t count)
         // The highest freqs L0 and L1 may not be even enabled by the user.
 
 	if (dlevel)
-		dlevel = L1 + OC_LX_SHIFT;
+		dlevel = OC_LX_OFFSET_LUT[L1];
 	else
-		dlevel = L0 + OC_LX_SHIFT;
+		dlevel = OC_LX_OFFSET_LUT[L0];
 
 	printk(KERN_DEBUG "%s : level=%d, time=%d\n", __func__, dlevel, dtime_msec);
 
