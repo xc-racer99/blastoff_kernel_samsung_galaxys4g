@@ -1701,16 +1701,17 @@ void wm8994_record_main_mic(struct snd_soc_codec *codec)
 	else
 		wm8994_set_codec_gain(codec, RECORDING_MODE, RECORDING_MAIN);
 		
+	if (wm8994->ganlite_active == wificall_on) {
+		val |= (WM8994_IN1L_VU |0x10); //volume
+		wm8994_write(codec, WM8994_LEFT_LINE_INPUT_1_2_VOLUME, val);
+	} else {
 #ifdef CONFIG_SND_VOODOO_RECORD_PRESETS
-	voodoo_hook_record_main_mic();
+		if ( ! ( wm8994->input_source == VOIP_INPUT || wm8994->input_source == RECOGNITION ) )
+			voodoo_hook_record_main_mic();
 #endif
-			
-	if(wm8994->ganlite_active == wificall_on)
-{				val |= (WM8994_IN1L_VU |0x10); //volume
-			wm8994_write(codec, WM8994_LEFT_LINE_INPUT_1_2_VOLUME, val);
-}
+	}
 
-if(wm8994->mic_mute ==MUTE_ON)
+	if(wm8994->mic_mute == MUTE_ON)
 	{
 		wm8994_write(codec,WM8994_AIF1_ADC1_LEFT_VOLUME,0x100);
 		wm8994_write(codec,WM8994_AIF1_ADC1_RIGHT_VOLUME,0x100);
