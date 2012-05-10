@@ -49,6 +49,10 @@
 #define wm8994_read(codec, reg) tegrak_wm8994_read(codec, reg)
 #endif
 
+#ifdef CONFIG_S5PC110_VIBRANTPLUS_BOARD
+extern int wm8994_voodoo_ignore_recording(struct snd_soc_codec *codec);
+#endif
+
 bool bypass_write_hook = false;
 
 short unsigned int debug_log_level = LOG_OFF;
@@ -644,7 +648,11 @@ unsigned short osr128_get_value(unsigned short val)
 	else
 		val &= ~WM8994_DAC_OSR128;
 
+#ifdef CONFIG_S5PC110_VIBRANTPLUS_BOARD
+	if (adc_osr128 == 1 && ! wm8994_voodoo_ignore_recording(codec) ) // [antsvx] don't use ADC overampling for voip and recognition (paranoia)
+#else
 	if (adc_osr128 == 1)
+#endif
 		val |= WM8994_ADC_OSR128;
 	else
 		val &= ~WM8994_ADC_OSR128;

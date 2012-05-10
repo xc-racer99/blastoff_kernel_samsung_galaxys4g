@@ -1564,6 +1564,16 @@ if(wm8994->mic_mute ==MUTE_ON)
 
 }
 
+#ifdef CONFIG_SND_VOODOO_RECORD_PRESETS
+int wm8994_voodoo_ignore_recording(struct snd_soc_codec *codec)
+{
+        struct wm8994_priv *wm8994 = codec->drvdata;
+	return wm8994->ganlite_active == wificall_on ||
+		wm8994->input_source == VOIP_INPUT ||
+		wm8994->input_source == RECOGNITION;
+}
+#endif
+
 void wm8994_record_main_mic(struct snd_soc_codec *codec)
 {
 	struct wm8994_priv *wm8994 = codec->drvdata;
@@ -1706,7 +1716,7 @@ void wm8994_record_main_mic(struct snd_soc_codec *codec)
 		wm8994_write(codec, WM8994_LEFT_LINE_INPUT_1_2_VOLUME, val);
 	} else {
 #ifdef CONFIG_SND_VOODOO_RECORD_PRESETS
-		if ( ! ( wm8994->input_source == VOIP_INPUT || wm8994->input_source == RECOGNITION ) )
+		if ( ! wm8994_voodoo_ignore_recording(codec) )
 			voodoo_hook_record_main_mic();
 #endif
 	}
