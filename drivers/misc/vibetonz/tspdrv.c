@@ -64,7 +64,7 @@ static char g_bIsPlaying = false;
 static int g_bStopRequested = false;
 static actuator_samples_buffer g_SamplesBuffer[NUM_ACTUATORS] = {{0}}; 
 
-#define VIBE_TUNING
+//#define VIBE_TUNING
 
 /* For QA purposes */
 #ifdef QA_TEST
@@ -83,8 +83,9 @@ static VibeInt8 g_nForceLog[FORCE_LOG_BUFFER_SIZE];
 #include "VibeOSKernelLinuxTime.c"
 
 /* timed_output */
-//#define VIBRATOR_PERIOD	87084/2
-//#define VIBRATOR_DUTY	87000/2
+#define VIBRATOR_PERIOD		(87084 / 2)
+#define VIBRATOR_DUTY		(87080 / 2)
+
 
 static struct hrtimer timer;
 
@@ -96,12 +97,19 @@ struct pwm_device	*vib_pwm;
 static int set_vibetonz(int timeout)
 {
 	if(!timeout) {
-            	ImmVibeSPI_ForceOut_AmpDisable(0);
+		pwm_disable(Immvib_pwm);
+		gpio_set_value(GPIO_VIBTONE_EN1, GPIO_LEVEL_LOW);
+		gpio_direction_input(GPIO_VIBTONE_EN1);
+		s3c_gpio_setpull(GPIO_VIBTONE_EN1,S3C_GPIO_PULL_DOWN);
             	wake_unlock(&vib_wake_lock);
 	}
 	else {
             	wake_lock(&vib_wake_lock);
-                ImmVibeSPI_ForceOut_AmpEnable(0);
+		pwm_config(Immvib_pwm, VIBRATOR_DUTY, VIBRATOR_PERIOD);
+		pwm_enable(Immvib_pwm);
+		gpio_direction_output(GPIO_VIBTONE_EN1, GPIO_LEVEL_LOW);
+		mdelay(1);
+		gpio_set_value(GPIO_VIBTONE_EN1, GPIO_LEVEL_HIGH);
 	}
 
 	vibrator_value = timeout;
@@ -145,9 +153,7 @@ static void enable_vibetonz_from_user(struct timed_output_dev *dev,int value)
 		if (value > max_timeout)
 			value = max_timeout;
 
-		hrtimer_start(&timer,
-						ktime_set(value / 1000, (value % 1000) * 1000000),
-						HRTIMER_MODE_REL);
+		hrtimer_start(&timer, ns_to_ktime( (u64) value * NSEC_PER_MSEC), HRTIMER_MODE_REL);
 		vibrator_value = 0;
 	}
 }
@@ -228,7 +234,7 @@ EXPORT_SYMBOL(immTest_test);
 extern long int freq_count;
 static ssize_t immTest_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	//printk(KERN_INFO "[VIBETONZ] %s : operate nothing\n", __FUNCTION__);
+	printk(KERN_INFO "[VIBETONZ] %s : operate nothing\n", __FUNCTION__);
 
 	return 0;
 }
@@ -238,7 +244,7 @@ static ssize_t immTest_store(struct device *dev, struct device_attribute *attr, 
 	unsigned long arg1=0, arg2=0;
 
 	unsigned long value = simple_strtoul(buf, &after, 10);
-	//printk(KERN_INFO "[VIBETONZ] value:%ld\n", value);
+	printk(KERN_INFO "[VIBETONZ] value:%ld\n", value);
 
 	if (value > 0) 
 		ImmVibeSPI_ForceOut_Set(0, value);
