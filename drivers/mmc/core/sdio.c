@@ -28,8 +28,6 @@
 #include <linux/mmc/sdio_ids.h>
 #endif
 
-#define BRCM_PATCH
-
 static int sdio_read_fbr(struct sdio_func *func)
 {
 	int ret;
@@ -315,6 +313,14 @@ static int mmc_sdio_init_card(struct mmc_host *host, u32 ocr,
 		if (err)
 			goto remove;
 
+		/*
+		 * Update oldcard with the new RCA received from the SDIO
+		 * device -- we're doing this so that it's updated in the
+		 * "card" struct when oldcard overwrites that later.
+		 */
+		if (oldcard)
+			oldcard->rca = card->rca;
+
 		mmc_set_bus_mode(host, MMC_BUSMODE_PUSHPULL);
 	}
 
@@ -469,7 +475,7 @@ static void mmc_sdio_detect(struct mmc_host *host)
 static int mmc_sdio_suspend(struct mmc_host *host)
 {
 	int i, err = 0;
-#ifndef BRCM_PATCH
+
 	for (i = 0; i < host->card->sdio_funcs; i++) {
 		struct sdio_func *func = host->card->sdio_func[i];
 		if (func && sdio_func_present(func) && func->dev.driver) {
@@ -490,7 +496,7 @@ static int mmc_sdio_suspend(struct mmc_host *host)
 			pmops->resume(&func->dev);
 		}
 	}
-#endif
+
 	if (!err && host->pm_flags & MMC_PM_KEEP_POWER) {
 		mmc_claim_host(host);
 		sdio_disable_wide(host->card);
@@ -502,8 +508,8 @@ static int mmc_sdio_suspend(struct mmc_host *host)
 
 static int mmc_sdio_resume(struct mmc_host *host)
 {
-	int i, err = 0;
-#ifndef BRCM_PATCH
+	int i, err;
+
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
@@ -535,7 +541,7 @@ static int mmc_sdio_resume(struct mmc_host *host)
 			err = pmops->resume(&func->dev);
 		}
 	}
-#endif
+
 	return err;
 }
 
