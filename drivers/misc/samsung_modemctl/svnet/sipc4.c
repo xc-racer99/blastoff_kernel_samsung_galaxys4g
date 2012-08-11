@@ -211,7 +211,7 @@ extern unsigned int HWREV;
 static DEFINE_MUTEX(pdp_mutex);
 static struct net_device *pdp_devs[PDP_MAX];
 static int pdp_cnt;
-unsigned long pdp_bitmap[DIV_ROUND_UP(PDP_MAX, BITS_PER_LONG)];
+unsigned long pdp_bitmap[PDP_MAX/BITS_PER_LONG];
 
 static void clear_pdp_wq(struct work_struct *work);
 static DECLARE_WORK(pdp_work, clear_pdp_wq);
@@ -249,6 +249,15 @@ static const struct attribute_group pdp_group = {
 	.name = "pdp",
 	.attrs = pdp_attributes,
 };
+
+#if defined (CONFIG_CP_CHIPSET_STE) 
+//#define STE_SWWORKAROUND_MCLKREQ_TIMMING
+#endif
+
+#if defined (STE_SWWORKAROUND_MCLKREQ_TIMMING)
+static void do_command_onedram_write_mailbox_wq(struct work_struct *work);
+static DECLARE_WORK(onedram_write_mailbox_work, do_command_onedram_write_mailbox_wq);
+#endif
 
 
 #if defined(NOISY_DEBUG)
@@ -308,7 +317,7 @@ static int _get_auth(void)
 	return r;
 }
 
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
 static void _put_auth(struct sipc *si, u32 mailbox)
 {
 	if (!si)
@@ -373,7 +382,7 @@ static void _check_buffer(struct sipc *si)
 
 		mailbox |= mb_data[i].mask_send;
 	}
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
 	_put_auth(si, 0);
 #else
 	_put_auth(si);
@@ -382,6 +391,15 @@ static void _check_buffer(struct sipc *si)
 	if (mailbox)
 		si->queue(MB_DATA(mailbox), si->queue_data);
 }
+
+#if defined (STE_SWWORKAROUND_MCLKREQ_TIMMING)
+static void do_command_onedram_write_mailbox_wq(struct work_struct *work)
+{
+	int r; 
+	r = onedram_write_mailbox(MB_CMD(MBC_RES_SEM));
+	printk("do_command_onedram_write_mailbox_wq = [%d]\n", r);
+}
+#endif
 
 static void _do_command(struct sipc *si, u32 mailbox)
 {
@@ -446,7 +464,7 @@ void sipc_handler(u32 mailbox, void *data)
 	}
 
 	if (mailbox & MB_COMMAND) {
-	#if !defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+	#if (!defined CONFIG_CP_CHIPSET_STE) || (defined(CONFIG_S5PC110_DEMPSEY_BOARD))
 		_check_buffer(si);  // check buffer for missing interrupt
 	#endif
 		_do_command(si, mailbox);
@@ -461,7 +479,7 @@ static inline void _init_data(struct sipc *si, unsigned char *base)
 	int i;
 
 	si->map = (struct sipc_mapped *)base;
-	#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+	#if defined (CONFIG_CP_CHIPSET_STE)  
 	if(si->map->magic == 0xFF)
 	{
 		si->map->magic = 0x0;
@@ -486,7 +504,7 @@ static inline void _init_data(struct sipc *si, unsigned char *base)
 		r->info = info;
 		r->cont = cont;
 		
-		#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+		#if defined (CONFIG_CP_CHIPSET_STE)  
 		if(si->map->magic == 0xFF)
 		{
 			cont->out_head = 0;
@@ -961,7 +979,7 @@ int sipc_write(struct sipc *si, struct sk_buff_head *sbh)
 		skb_queue_purge(sbh);
 		return -ENXIO;
 	}
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)  
 	skb = skb_dequeue(sbh);
 	if ( !skb )
 		return 0;
@@ -1008,7 +1026,7 @@ int sipc_write(struct sipc *si, struct sk_buff_head *sbh)
 		skb = skb_dequeue(sbh);
 	}
 
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
 //	_req_rel_auth(si);
 	_put_auth(si, mailbox);
 #else
@@ -1017,7 +1035,9 @@ int sipc_write(struct sipc *si, struct sk_buff_head *sbh)
 #endif
 
 	if(mailbox)
+	{
 		onedram_write_mailbox(MB_DATA(mailbox));
+	}
 
 	if (r < 0) {
 		if (r == -ENOSPC) {
@@ -1652,11 +1672,14 @@ int sipc_read(struct sipc *si, u32 mailbox, int *cond)
 		inbuf = CIRC_CNT(rb->rb_in_head, rb->rb_in_tail, rb->rb_size);
 		if (!inbuf)
 			continue;
-#if !defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+
+#if defined (CONFIG_CP_CHIPSET_STE)
+
+#else
 		if (i == IPCIDX_FMT)
 			_fmt_wakelock_timeout();
 		else
-			_non_fmt_wakelock_timeout();
+			_non_fmt_wakelock_timeout();			
 #endif
 
 		_dbg("%s: %d bytes in %d\n", __func__, inbuf, i);
@@ -1669,22 +1692,20 @@ int sipc_read(struct sipc *si, u32 mailbox, int *cond)
 			dev_err(&si->svndev->dev, "read err %d\n", r);
 			break;
 		}
-#if !defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
+#else
 		if (mailbox & mb_data[i].mask_req_ack)
 			res = mb_data[i].mask_res_ack;
 #endif
 	}
 
 
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
-//	_req_rel_auth(si);
+#if defined (CONFIG_CP_CHIPSET_STE) 
+//	_req_rel_auth(si); 
 	onedram_put_auth(0);
 //	onedram_rel_sem();
 #else
-#if !defined(CONFIG_ARIES_NTT)
 	_req_rel_auth(si);
-#endif
-
 	_put_auth(si);
 
 	if (res)
@@ -1744,7 +1765,7 @@ static inline ssize_t _debug_show_buf(struct sipc *si, char *buf)
 				rb->rb_in_head, rb->rb_in_tail, inbuf,
 				rb->rb_out_head, rb->rb_out_tail, outbuf);
 	}
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
 	_put_auth(si, 0);
 #else
 	_put_auth(si);
@@ -1828,7 +1849,7 @@ int sipc_debug(struct sipc *si, const char *buf)
 		/* do nothing */
 		break;
 	}
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
 	_put_auth(si, 0);
 #else
 	_put_auth(si);
@@ -1861,7 +1882,7 @@ int sipc_whitelist(struct sipc *si, const char *buf, size_t count)
 	r =  __write(rb,(u8 *) buf, (unsigned int )count);
 
 	_req_rel_auth(si);
-#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+#if defined (CONFIG_CP_CHIPSET_STE)
 	_put_auth(si, 0);
 #else
 	_put_auth(si);
