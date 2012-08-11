@@ -47,7 +47,6 @@
 #include "s3c_lcd.h"
 
 static int fb_idx = 0;
-//static int g_iCnt =0;
 
 #define S3C_MAX_BACKBUFFERS 	5
 #define S3C_MAX_BUFFERS (S3C_MAX_BACKBUFFERS+1)
@@ -356,14 +355,7 @@ static irqreturn_t S3C_VSyncISR(int irq, void *dev_id)
 	{
 		return IRQ_NONE;
 	}
-#if 0
-	g_iCnt++;
-	if((g_iCnt % 110)==0)
-	{
-		printk("[PVR]S3C_VSyncISR inside G3D DDK\n");
-		g_iCnt=0;
-	}
-#endif
+
 	queue_work(g_psLCDInfo->psWorkQueue, &g_psLCDInfo->sWork);
 
 	return IRQ_HANDLED;
