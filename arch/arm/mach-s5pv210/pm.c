@@ -453,10 +453,9 @@ void s5pv210_cpu_suspend(void)
                 	}
 
 
-		   printk("%s[%d],Con=%s,%x D= %s, P_UD = %s, PD_CON=%s, PD_PD= %s \n", \
-			regNameString,bitNumber, configString , conregBuff[bitNumber], dataString, pullDownString, \ 
-			 PDNconString,PDNpullPDString);		
-
+			printk("%s[%d],Con=%s,%x D= %s, P_UD = %s, PD_CON=%s, PD_PD= %s \n",
+				regNameString,bitNumber, configString , conregBuff[bitNumber],
+				dataString, pullDownString, PDNconString,PDNpullPDString);
 
 /*
 //for Excel file *****************************************************

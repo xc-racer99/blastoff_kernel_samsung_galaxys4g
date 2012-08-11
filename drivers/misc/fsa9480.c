@@ -336,7 +336,7 @@ void FSA9480_MhlTvOff(void)
 EXPORT_SYMBOL(FSA9480_MhlTvOff);
 #endif  //CONFIG_VIDEO_MHL_V1
 //#if defined (CONFIG_S5PC110_HAWK_BOARD) || defined (CONFIG_S5PC110_KEPLER_BOARD) 	//Build Error
-extern int max8998_check_vdcin();
+extern int max8998_check_vdcin(void);
 
 /* need?
 u8 FSA9480_Get_FPM_Status(void)
@@ -629,7 +629,7 @@ void fsa9480_manual_switching(int path)
 }
 EXPORT_SYMBOL(fsa9480_manual_switching);
 //HDLNC_OPK_20110307
-void fsa9480_enable_spk()
+void fsa9480_enable_spk(void)
 {
 	#if defined(CONFIG_S5PC110_KEPLER_BOARD)
 		fsa9480_manual_switching(SWITCH_PORT_AUDIO);
