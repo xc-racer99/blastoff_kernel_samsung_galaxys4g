@@ -1,5 +1,5 @@
 /**
- * SAMSUNG MODEM IPC header
+ * header for modem control
  *
  * Copyright (C) 2010 Samsung Electronics. All rights reserved.
  *
@@ -18,17 +18,21 @@
  * 02110-1301 USA
  */
 
-#ifndef __PACKET_DATA_PROTOCOL_H__
-#define __PACKET_DATA_PROTOCOL_H__
+#ifndef __MODEM_CONTROL_H__
+#define __MODEM_CONTROL_H__
 
-#include <linux/netdevice.h>
+struct modemctl_platform_data {
+	const char *name;
 
-struct pdp_priv {
-	int channel;
-	struct net_device *parent;
+	unsigned gpio_phone_on;
+	unsigned gpio_phone_active;
+	unsigned gpio_pda_active;
+	unsigned gpio_cp_reset;
+	unsigned gpio_usim_boot;
+	unsigned gpio_flm_sel;
+	unsigned gpio_sim_ndetect;
+
+	void (*cfg_gpio)(void);
 };
 
-extern struct net_device* create_pdp(int channel, struct net_device *parent);
-extern void destroy_pdp(struct net_device **);
-
-#endif /* __PACKET_DATA_PROTOCOL_H__ */
+#endif /* __MODEM_CONTROL_H__ */

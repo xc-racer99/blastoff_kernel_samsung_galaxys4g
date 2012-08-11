@@ -21,7 +21,7 @@
 //#define DEBUG
 
 #if defined(DEBUG)
-//#  define NOISY_DEBUG
+#  define NOISY_DEBUG
 #endif
 
 #include <linux/init.h>
@@ -133,7 +133,7 @@ static inline void _wake_lock_timeout(struct svnet *sn)
 		wake_lock_timeout(&sn->wlock, sn->wake_time);
 }
 
-void _non_fmt_wakelock_timeout(void) {
+void _non_fmt_wakelock_timeout() {
 	if (svnet_dev)
 		_wake_lock_timeout(svnet_dev);
 }
@@ -145,7 +145,7 @@ static inline void _wake_process_lock_timeout(struct svnet *sn)
 		wake_lock_timeout(&sn->wlock, sn->wake_process_time);
 }
 
-void _fmt_wakelock_timeout(void) {
+void _fmt_wakelock_timeout() {
 	if (svnet_dev)
 		_wake_process_lock_timeout(svnet_dev);
 }
@@ -588,7 +588,7 @@ static void svnet_setup(struct net_device *ndev)
 //	ndev->destructor = free_netdev;
 }
 
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 extern int onedram_rel_sem(void);
 #endif
 static void svnet_read_wq(struct work_struct *work)
@@ -599,7 +599,7 @@ static void svnet_read_wq(struct work_struct *work)
 	int r = 0;
 	int contd = 0;
 	unsigned long long t, d;
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	int retry = 0;
 #endif
 	t = cpu_clock(smp_processor_id());
@@ -629,14 +629,14 @@ static void svnet_read_wq(struct work_struct *work)
 				break;
 			}
 		} else {
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 			if ( retry < 5 ) {
 				dev_err(&sn->ndev->dev,
 					"IPC not work, retry %d (event %x)\n", retry, event);
 				retry++;
 				mdelay(50);
 				continue;
-			} else {		
+			} else {
 				dev_err(&sn->ndev->dev,
 					"IPC not work, skip event %x\n", event);
 			}
@@ -647,7 +647,7 @@ static void svnet_read_wq(struct work_struct *work)
 		}
 		event = _dequeue_evt(&sn->rxq);
 	}
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	onedram_rel_sem();
 #endif
 

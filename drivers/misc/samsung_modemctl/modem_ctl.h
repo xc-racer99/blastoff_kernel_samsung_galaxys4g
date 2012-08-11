@@ -37,6 +37,9 @@ struct modemctl_data {
 	unsigned gpio_phone_active;
 	unsigned gpio_pda_active;
 	unsigned gpio_cp_reset;
+	unsigned gpio_phone_on;
+	bool is_cdma_modem; /* 1:CDMA Modem */
+	int num_pdp_contexts;
 };
 
 #endif

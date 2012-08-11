@@ -35,7 +35,7 @@
 #include <linux/fs.h>
 #include <linux/poll.h>
 #include <linux/sched.h>
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 #include <linux/delay.h>
 #include <mach/param.h>
 #include <linux/gpio.h>
@@ -48,6 +48,8 @@
 
 #define ONEDRAM_REG_OFFSET 0xFFF800
 #define ONEDRAM_REG_SIZE 0x800
+
+static DEFINE_MUTEX(onedram_mutex);
 
 struct onedram_reg_mapped {
 	u32 sem;
@@ -98,7 +100,7 @@ struct onedram {
 	int irq;
 
 	struct completion comp;
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	struct completion comp_chkbit;
 #endif
 	atomic_t ref_sem;
@@ -110,53 +112,6 @@ struct onedram {
 };
 struct onedram *onedram;
 
-#if defined (CONFIG_CP_CHIPSET_STE) 
-//#define STE_SWWORKAROUND_MCLKREQ_TIMMING
-#endif
-
-#if defined (STE_SWWORKAROUND_MCLKREQ_TIMMING)
-#include <asm/system.h>
-
-#define STE_MODEM_INACTIVE_SLEEP     120 // Sleep XYZus (exact time TBD)
-#define STE_MODEM_INACTIVE_MAX_SLEEP 170 // Max safe sleep ABCus (exact time TBD)
-#define STE_MAX_RETRY                 50 // If we overslept too many times, wait with interrupts off
-
-unsigned long ste_irq_flag;
-static int onedram_writemailbox_BA_ste_workaround(struct onedram *od, u32 cmd);
-#endif
-
-#if 0 //defined (CONFIG_CP_CHIPSET_STE)
-static inline int _get_checkbit(struct onedram *od);
-#endif
-
-#if defined (CONFIG_CP_CHIPSET_STE)
-#if defined(CONFIG_KERNEL_DEBUG_SEC) 
-#include <linux/kernel_sec_common.h>
-#define ERRMSG "CP H/W watchdog Crash"
-static char cp_errmsg[65];
-static void _cp_watchdog_dump(void);
-#else
-#define _cp_watchdog_dump() do { } while(0)
-#endif
-
-#if defined(CONFIG_KERNEL_DEBUG_SEC) 
-static void _cp_watchdog_dump(void)
-{
-	t_kernel_sec_mmu_info mmu_info;
-
-	memset(cp_errmsg, 0, sizeof(cp_errmsg));
-
-	strcpy(cp_errmsg, ERRMSG);
-
-	printk("\nCP Dump Cause - %s\n", cp_errmsg);
-
-	kernel_sec_set_upload_magic_number();
-	kernel_sec_get_mmu_reg_dump(&mmu_info);
-	kernel_sec_set_upload_cause(UPLOAD_CAUSE_CP_ERROR_FATAL);
-	kernel_sec_hw_reset(false);
-}
-#endif
-#endif
 static DEFINE_SPINLOCK(onedram_lock);
 
 static unsigned long hw_tmp; /* for hardware */
@@ -180,7 +135,7 @@ static ssize_t show_debug(struct device *d,
 	p += sprintf(p, "Mailbox send: %lu\n", send_cnt);
 	p += sprintf(p, "Mailbox recv: %lu\n", recv_cnt);
 
-	#if defined (CONFIG_CP_CHIPSET_STE)
+	#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	p += sprintf(p, "Onedram ap interrupt status : %d\n", gpio_get_value(GPIO_nINT_ONEDRAM_AP));
 	#endif
 	
@@ -209,165 +164,10 @@ static inline int _read_sem(struct onedram *od)
 	return od->reg->sem;
 }
 
-#if defined (STE_SWWORKAROUND_MCLKREQ_TIMMING)
-static int onedram_writemailbox_BA_ste_workaround(struct onedram *od, u32 cmd)
-{
-	int i = 0 ;
-	int ModemActive = 0;
-	
-	unsigned long long TimeBeforeSleep = 0;
-	unsigned long long TimeAfterSleep = 0;
-	unsigned long long TimeSleep = 0;
-
-	for ( i=0 ; i<STE_MAX_RETRY; i++)
-	{
-		local_irq_save(ste_irq_flag);
-		#if 0 // Jinwoo Chang request test binary
-			gpio_set_value(GPIO_PDA_ACTIVE, GPIO_LEVEL_LOW); 
-		#endif
-		ModemActive = gpio_get_value(GPIO_PHONE_ACTIVE); 
-		if ( ModemActive )
-		{
-			//**dev_dbg(od->dev, "[%s] mailboxBA OK => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);
-			//printk("[%s] mailboxBA OK => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);
-			#if 0 // Jinwoo Chang request test binary
-				gpio_set_value(GPIO_PDA_ACTIVE, GPIO_LEVEL_HIGH); 
-			#endif
-			//_get_checkbit(od);
-			od->reg->mailbox_BA = cmd;
-			local_irq_restore(ste_irq_flag);
-
-			break;
-		}		
-		else if (i==STE_MAX_RETRY-1)
-		{
-			/* Last loop case */
-			TimeBeforeSleep = cpu_clock(smp_processor_id());	 // in nano scale
-			udelay(STE_MODEM_INACTIVE_SLEEP);				 // in micro scale
-			TimeAfterSleep = cpu_clock(smp_processor_id());	  
-			TimeSleep = TimeAfterSleep - TimeBeforeSleep;
-
-			if ( TimeSleep > (STE_MODEM_INACTIVE_MAX_SLEEP * 1000) )
-			{
-				//**dev_dbg(od->dev, "[%s]Oversleep => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);	 
-				printk("[%s][Warning] Never reach here => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i); 
-			}
-			else
-			{
-				#if 0 // Jinwoo Chang request test binary
-					gpio_set_value(GPIO_PDA_ACTIVE, GPIO_LEVEL_HIGH); 
-				#endif 
-				//_get_checkbit(od);
-				od->reg->mailbox_BA = cmd;
-				local_irq_restore(ste_irq_flag);
-				dev_dbg(od->dev, "[%s] Proper sleep time => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);
-				//printk("[%s] Proper sleep time => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i); 
-				break;
-			}
-		}
-		else
-		{
-			TimeBeforeSleep = cpu_clock(smp_processor_id()); // in nano scale
-			local_irq_restore(ste_irq_flag);
-			
-			udelay(STE_MODEM_INACTIVE_SLEEP); 			     // in micro scale
-
-			local_irq_save(ste_irq_flag);
-			TimeAfterSleep = cpu_clock(smp_processor_id()); 			
-			TimeSleep = TimeAfterSleep - TimeBeforeSleep;
-			
-			if ( TimeSleep > (STE_MODEM_INACTIVE_MAX_SLEEP * 1000) )
-			{
-				// Oversleep				
-				local_irq_restore(ste_irq_flag);
-				
-				dev_dbg(od->dev, "[%s]Oversleep => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);				
-				printk(KERN_DEBUG "[%s] Oversleep ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);	
-				continue;
-			}
-			else
-			{
-				#if 0 // Jinwoo Chang request test binary
-					gpio_set_value(GPIO_PDA_ACTIVE, GPIO_LEVEL_HIGH); 
-				#endif 
-				//_get_checkbit(od);
-				od->reg->mailbox_BA = cmd;
-				local_irq_restore(ste_irq_flag);
-				
-				dev_dbg(od->dev, "[%s] Proper sleep time => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);
-				//printk("[%s] Proper sleep time => ModemActive=[%d], i=[%d]\n",__func__, ModemActive, i);	
-				break;
-			}
-		}		
-	}	
-	
-	return 0;
-}
-
-	#if 0 // test
-	{
-		int i,j;long long t1, t2, t;
-
-		printk("[0] ===================\n");
-		for (j=0; j<10; j++) {		
-			for (i=0; i<1000; i++) {
-				t1 = cpu_clock(smp_processor_id()); 
-				udelay(1000); 
-				t2 = cpu_clock(smp_processor_id()); 
-				t = t2 - t1;
-			}
-			printk("[%d] ===================\n", j);
-		}	
-	}
-	/* result 
-	[    0.419248] [0] ===================
-	[    1.422023] [0] ===================
-	[    2.423903] [1] ===================
-	[    3.425780] [2] ===================
-	[    4.427670] [3] ===================
-	[    5.429546] [4] ===================
-	[    6.431439] [5] ===================
-	[    7.433317] [6] ===================
-	[    8.435207] [7] ===================
-	[    9.437083] [8] ===================
-	[   10.438976] [9] ===================
-	*/
-	#endif
-
-#endif
-
-#if 0 //defined (CONFIG_CP_CHIPSET_STE)
-static inline int _get_checkbit(struct onedram *od)
-{
-	int retry = 0;
-	unsigned long timeleft;
-
-	while(od->reg->check_BA)
-	{	
-		timeleft = wait_for_completion_timeout(&od->comp_chkbit, HZ/50);
-		
-		if (timeleft)
-			break;
-
-		if (!od->reg->check_BA)
-			break;
-
-		retry++;
-		if (retry > 50 ) { /* time out after 1 seconds */
-			dev_err(od->dev, "Get ChkBit time out\n");
-			return -ETIMEDOUT;
-		}
-		dev_dbg(od->dev, "[%s]onedram: Waiting ChkBit \n",__func__);
-	}
-	
-	return 0;
-}
-#endif
-
 static inline int _send_cmd(struct onedram *od, u32 cmd)
 {
-#if defined (CONFIG_CP_CHIPSET_STE)
-	u32 i=0;	
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
+	u32 i = 0;
 	int retry = 0;
 	unsigned long timeleft;
 #endif
@@ -380,14 +180,10 @@ static inline int _send_cmd(struct onedram *od, u32 cmd)
 		dev_err(od->dev, "Failed to send cmd, not initialized\n");
 		return -EFAULT;
 	}
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	while(od->reg->check_BA)
-	{	
-	//	timeleft = wait_for_completion_timeout(&od->comp_chkbit, HZ/50);
+	{
 		udelay(1000);
-		
-	//	if (timeleft)
-	//		break;
 
 		if (!od->reg->check_BA)
 			break;
@@ -402,13 +198,7 @@ static inline int _send_cmd(struct onedram *od, u32 cmd)
 #endif
 	dev_dbg(od->dev, "send %x\n", cmd);
 	send_cnt++;
-
-#if defined (STE_SWWORKAROUND_MCLKREQ_TIMMING)
-	onedram_writemailbox_BA_ste_workaround( od, cmd );
-#else
 	od->reg->mailbox_BA = cmd;
-#endif
-
 	return 0;
 }
 
@@ -437,14 +227,11 @@ static inline int _get_auth(struct onedram *od, u32 cmd)
 	unsigned long timeleft;
 	int retry = 0;
 
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	_send_cmd(od, cmd);
-	while (!od->reg->sem) /* send cmd every 20m seconds */			
-	{	
+	while (!od->reg->sem) /* send cmd every 20m seconds */
+	{
 		timeleft = wait_for_completion_timeout(&od->comp, HZ/50);
-		
-	//	if (timeleft)
-	//		break;
 
 		if (_read_sem(od))
 			break;
@@ -454,10 +241,10 @@ static inline int _get_auth(struct onedram *od, u32 cmd)
 			dev_err(od->dev, "get authority time out\n");
 			return -ETIMEDOUT;
 		}
-		
+
 		dev_dbg(od->dev, "[%s]onedram: Waiting Semaphore \n",__func__);
 	}
-	
+
 	return 0;
 #else
 	/* send cmd every 20m seconds */
@@ -524,14 +311,11 @@ static int put_auth(struct onedram *od, int release)
 		dev_err(od->dev, "Failed to put authority\n");
 		return -EFAULT;
 	}
-#if defined (CONFIG_CP_CHIPSET_STE)
-
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	atomic_dec_and_test(&od->ref_sem);
 	INIT_COMPLETION(od->comp);
 	INIT_COMPLETION(od->comp_chkbit);
-
 	return 0;
-
 #else
 	if (release)
 		set_bit(0, &od->flags);
@@ -564,7 +348,7 @@ static int rel_sem(struct onedram *od)
 
 	INIT_COMPLETION(od->comp);
 
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	INIT_COMPLETION(od->comp_chkbit);
 #endif
 	clear_bit(0, &od->flags);
@@ -640,20 +424,17 @@ static irqreturn_t onedram_irq_handler(int irq, void *data)
 
 	r = onedram_read_mailbox(&mailbox);
 	if (r)
-		return IRQ_HANDLED;
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	if (old_mailbox == mailbox &&
 			old_clock + 100000 > cpu_clock(smp_processor_id()))
+#endif
 		return IRQ_HANDLED;
 
-//	dev_dbg(od->dev, "[%d] recv %x\n", _read_sem(od), mailbox);
-#else
 //	if (old_mailbox == mailbox &&
 //			old_clock + 100000 > cpu_clock(smp_processor_id()))
 //		return IRQ_HANDLED;
 
 	dev_dbg(od->dev, "[%d] recv %x\n", _read_sem(od), mailbox);
-#endif
 	hw_tmp = _read_sem(od); /* for hardware */
 
 	if (h_list.len) {
@@ -677,14 +458,14 @@ static irqreturn_t onedram_irq_handler(int irq, void *data)
 	if (_read_sem(od))
 		complete_all(&od->comp);
 
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	if (!od->reg->check_BA)
 		complete_all(&od->comp_chkbit);
 #endif
 	wake_up_interruptible(&od->waitq);
 	kill_fasync(&od->async_queue, SIGIO, POLL_IN);
 	
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	old_clock = cpu_clock(smp_processor_id());
 	old_mailbox = mailbox;
 #else
@@ -781,12 +562,6 @@ static ssize_t onedram_read(struct file *filp, char __user *buf,
 		schedule();
 	}
 
-	#if defined (CONFIG_CP_CHIPSET_STE)
-	#if defined(CONFIG_KERNEL_DEBUG_SEC) 
-	if(data == 0xabcd00c9)
-		_cp_watchdog_dump();
-	#endif
-	#endif
 	retval = put_user(data, (u32 __user *)buf);
 	if (!retval)
 		retval = sizeof(u32);
@@ -866,17 +641,13 @@ static int onedram_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-#if defined (CONFIG_CP_CHIPSET_STE)
-unsigned int KeyValueWhenPowerUp = 0x0;
-extern u8 FSA9480_Get_JIG_UART_On_Status(void);
-#endif
-
-static int onedram_ioctl(struct inode *inode, struct file *filp,
-		unsigned int cmd, unsigned long arg)
+static long onedram_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct cdev *cdev = inode->i_cdev;
+	struct cdev *cdev = filp->f_dentry->d_inode->i_cdev;
 	struct onedram *od = container_of(cdev, struct onedram, cdev);
 	int r;
+
+	mutex_lock(&onedram_mutex);
 
 	switch (cmd) {
 	case ONEDRAM_GET_AUTH:
@@ -888,67 +659,22 @@ static int onedram_ioctl(struct inode *inode, struct file *filp,
 	case ONEDRAM_REL_SEM:
 		r = rel_sem(od);
 		break;
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	case ONEDRAM_GET_ITP:
 	{
-	#if 0
-
-		/* 1) ITP mode by key press. */
-		if ( sec_get_param_value )
-		{
-			sec_get_param_value(__PARAM_INT_13, &KeyValueWhenPowerUp);						
-		}
-		printk("[ITP Mode] 1) Key pressing or 2) JIG \n");
-		printk("KeyValueWhenPowerUp = [0x%x], func=[0x%x]\n", KeyValueWhenPowerUp, sec_get_param_value);
-#if (defined CONFIG_S5PC110_HAWK_BOARD) || (defined CONFIG_S5PC110_SIDEKICK_BOARD)
-	if ( KeyValueWhenPowerUp == 0x16d) /* Device powered up by volume down + Home key + Power key*/
-#elif defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
-	if ( KeyValueWhenPowerUp == 0x164) /* Device powered up by volume down + Power key*/
-#else
-	if ( KeyValueWhenPowerUp == 0x4) /* Device powered up by volume down + Power key*/
-#endif
-		{
-			r = 0x00000001;
-			memcpy(onedram_resource.start+36, &r, 4);			
-			printk("Get into M5720 ITP Branch boot. (By key press) \n");
-		}
-		else
-		{
-			r = 0x00000000;
-			memcpy(onedram_resource.start+36, &r, 4);			
-			printk("Get into M5720 Normal modem boot. (By key press) \n");
-		}
-
-		/* 2) ITP mode by JIG */
-		/*
-		if ( FSA9480_Get_JIG_UART_On_Status() )
-		{
-			r = 0x00000001;
-			memcpy(onedram_resource.start+36, &r, 4);	
-			printk("Get into M5720 ITP Branch boot. (By JIG) \n");
-		}
-		else
-		{
-			r = 0x00000000;
-			memcpy(onedram_resource.start+36, &r, 4);		
-			printk("Get into M5720 Normal modem boot. (By JIG) \n");
-		}
-		*/
-
-#else
 		r = 0x00000000;
-		memcpy(onedram_resource.start+36, &r, 4);			
+		memcpy(onedram_resource.start+36, &r, 4);
 		printk("Get into M5720 Normal modem boot. (By key press) \n");
-
-#endif 	
 		break;
 	}
-	#endif
+#endif
 
 	default:
 		r = -ENOIOCTLCMD;
 		break;
 	}
+
+	mutex_unlock(&onedram_mutex);
 
 	return r;
 }
@@ -963,7 +689,7 @@ static const struct file_operations onedram_fops = {
 	.open = onedram_open,
 	.release = onedram_release,
 	.mmap = onedram_mmap,
-	.ioctl = onedram_ioctl,
+	.unlocked_ioctl = onedram_ioctl,
 };
 
 static int _register_chrdev(struct onedram *od)
@@ -1154,7 +880,7 @@ static void _unregister_all_handlers(void)
 static void _init_data(struct onedram *od)
 {
 	init_completion(&od->comp);
-#if defined (CONFIG_CP_CHIPSET_STE)
+#if defined (CONFIG_S5PC110_VIBRANTPLUS_BOARD)
 	init_completion(&od->comp_chkbit);
 #endif
 	atomic_set(&od->ref_sem, 0);
@@ -1226,7 +952,6 @@ static int __devinit onedram_probe(struct platform_device *pdev)
 		goto err;
 	}
 	od->irq = irq;
-
 	enable_irq_wake(od->irq);
 
 	r = _register_chrdev(od);
