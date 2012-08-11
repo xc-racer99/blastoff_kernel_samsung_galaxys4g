@@ -40,7 +40,7 @@ make "${common[@]}" ${TARGET}_defconfig
 make "${common[@]}" zImage modules
 
 # rebuild the kernel with freshly made modules
-cp $(find . -name '*.ko') /tmp/initramfs/lib/modules/
-cp $(find . -name '*.ko') "${DEF_INITRAMFS_PATH}/lib/modules/"
+cp $(find ${OUTPUT} -name '*.ko') /tmp/initramfs/lib/modules/
+cp $(find ${OUTPUT} -name '*.ko') "${DEF_INITRAMFS_PATH}/lib/modules/"
 rm ${OUTPUT}/usr/*.o ${OUTPUT}/usr/initramfs_data.cpio.lzma
 make "${common[@]}" zImage
