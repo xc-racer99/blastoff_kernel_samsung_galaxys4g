@@ -139,8 +139,6 @@ fw-shipped-$(CONFIG_USB_SERIAL_XIRCOM) += keyspan_pda/xircom_pgs.fw
 fw-shipped-$(CONFIG_USB_VICAM) += vicam/firmware.fw
 fw-shipped-$(CONFIG_VIDEO_CPIA2) += cpia2/stv0672_vp4.bin
 fw-shipped-$(CONFIG_YAM) += yam/1200.bin yam/9600.bin
-fw-shipped-$(CONFIG_MFD_CG2900) += cg2900/cg2900_patch_info.fw cg2900/cg2900_settings_info.fw \
-                                   cg2900/CG2900_BTARMSS_2.xP5C3.fw cg2900/CG2900_Dempsey_SOC_2.x_G_1C1.fw
 
 fw-shipped-all := $(fw-shipped-y) $(fw-shipped-m) $(fw-shipped-)
 
