@@ -14,7 +14,7 @@ CROSS_COMPILE=${CROSS_COMPILE:-"ccache ${HOME}/arm-2009q3/bin/arm-none-eabi-"}
 DEF_INITRAMFS_PATH=${DEF_INITRAMFS_PATH:-"${HOME}/android_initramfs_samsung_galaxys4g"}
 OUTPUT="$(pwd)/out/${TARGET}"
 CCACHE_DIR="$(pwd)/out/.ccache"
-common+=( "-j${BLDJOBS}" )
+common+=( "-j1" )
 common+=( "O=${OUTPUT}" )
 common+=( "ARCH=${ARCH}" )
 common+=( "HOSTCC=${HOSTCC}" )

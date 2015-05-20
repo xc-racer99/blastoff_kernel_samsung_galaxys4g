@@ -1874,7 +1874,7 @@ static int __devinit cg2900_uart_probe(struct platform_device *pdev)
 	}
 	uart_info->cts_irq = resource->start;
 
-	uart_info->cts_gpio = IRQ_TO_GPIO(uart_info->cts_irq);
+	//uart_info->cts_gpio = IRQ_TO_GPIO(uart_info->cts_irq);
 
 	/* Init UART TX work queue */
 	uart_info->wq = create_singlethread_workqueue(UART_WQ_NAME);
